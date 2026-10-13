@@ -312,6 +312,109 @@ class TestKeybindsBackend(unittest.TestCase):
         self.assertIn("win.pin", catalog_ids)
         self.assertIn("ws.previous_history", catalog_ids)
 
+    def test_decode_code_key(self):
+        """`code:N` is an XKB keycode (evdev + 8) and must render as the key."""
+        self.assertEqual(keybinds_manager.normalize_key_chord("SUPER + code:10"), "SUPER + 1")
+        self.assertEqual(keybinds_manager.normalize_key_chord("SUPER + code:19"), "SUPER + 0")
+        self.assertEqual(keybinds_manager.normalize_key_chord("SUPER + code:20"), "SUPER + minus")
+        self.assertEqual(keybinds_manager.normalize_key_chord("SUPER + SHIFT + code:21"), "SUPER + SHIFT + equal")
+        # unknown codes stay as written rather than inventing a key
+        self.assertEqual(keybinds_manager.normalize_key_chord("SUPER + code:201"), "SUPER + code:201")
+
+    def test_expand_loop_binds(self):
+        """Workspace bindings a Lua for-loop writes must still be reported."""
+        lua = '\n'.join([
+            'for workspace = 1, 10 do',
+            '  local key = "code:" .. tostring(workspace + 9)',
+            '  o.bind("SUPER + " .. key, "Switch to workspace " .. workspace, hl.dsp.focus({ workspace = tostring(workspace) }))',
+            'end',
+        ])
+        binds = keybinds_manager.expand_loop_binds(lua, "tiling.lua")
+        self.assertEqual(len(binds), 10)
+        self.assertEqual(binds[0]["raw_key"], "SUPER + code:10")
+        self.assertEqual(binds[0]["description"], "Switch to workspace 1")
+        self.assertEqual(binds[9]["description"], "Switch to workspace 10")
+        self.assertEqual(keybinds_manager.normalize_key_chord(binds[9]["raw_key"]), "SUPER + 0")
+
+    def test_parse_default_bindings_includes_loop_generated(self):
+        keys = {b["key"] for b in keybinds_manager.parse_default_bindings()}
+        self.assertIn("SUPER + 1", keys)
+        self.assertIn("SUPER + 0", keys)
+
+    def test_classify_binding(self):
+        cases = [
+            ({"source": "island", "description": "Anything"}, keybinds_manager.CATEGORY_ISLAND),
+            ({"description": "Terminal", "action": '{ omarchy = "terminal" }'}, keybinds_manager.CATEGORY_APP),
+            ({"description": "System monitor (btop)", "action": '{ tui = "btop" }'}, keybinds_manager.CATEGORY_APP),
+            ({"description": "Switch to workspace 4", "action": "hl.dsp.focus({ workspace = 4 })"}, keybinds_manager.CATEGORY_WORKSPACE),
+            ({"description": "Toggle scratchpad", "action": 'hl.dsp.workspace.toggle_special("scratchpad")'}, keybinds_manager.CATEGORY_WORKSPACE),
+            ({"description": "Swap window up", "action": "hl.dsp.window.swap({ direction = \"u\" })"}, keybinds_manager.CATEGORY_WINDOW),
+            ({"description": "Screenshot", "action": '"omarchy-capture-screenshot"'}, keybinds_manager.CATEGORY_CAPTURE),
+            ({"description": "Universal paste", "action": 'universal_clipboard_shortcut("CTRL", "V")'}, keybinds_manager.CATEGORY_CLIPBOARD),
+            ({"description": "Dismiss last notification", "action": '"omarchy-shell notifications dismissOne"'}, keybinds_manager.CATEGORY_NOTIFICATION),
+            ({"description": "Brightness up", "action": '"omarchy-brightness-display +5%"'}, keybinds_manager.CATEGORY_DISPLAY),
+            ({"description": "Volume up", "action": '"omarchy-audio-output-volume raise"'}, keybinds_manager.CATEGORY_MEDIA),
+            ({"description": "My own thing", "action": '"some-command"', "source": "user"}, keybinds_manager.CATEGORY_CUSTOM),
+        ]
+        for item, expected in cases:
+            self.assertEqual(keybinds_manager.classify_binding(item), expected, f"wrong category for {item['description']}")
+
+    def test_localize_description(self):
+        zh = keybinds_manager.localize_description
+        self.assertEqual(zh("Switch to workspace 7"), "\u5207\u5230\u5de5\u4f5c\u533a 7")
+        self.assertEqual(zh("Move Window to Workspace 3 (Silent)"), "\u9759\u9ed8\u628a\u7a97\u53e3\u9001\u5230\u5de5\u4f5c\u533a 3\uff08\u4e0d\u8ddf\u968f\uff09")
+        self.assertEqual(zh("Bar panel 4"), "\u6253\u5f00\u72b6\u6001\u680f\u7b2c 4 \u4e2a\u9762\u677f")
+        # catalog preset names are Title Case versions of the same phrases
+        self.assertEqual(zh("Close Window"), zh("Close window"))
+        self.assertEqual(zh(""), "")
+        self.assertEqual(zh("Something Nobody Defined"), "")
+
+    def test_omarchy_defaults_are_all_translated(self):
+        """Omarchy's own descriptions are a fixed set, so none may fall through."""
+        for b in keybinds_manager.parse_default_bindings():
+            self.assertTrue(
+                keybinds_manager.localize_description(b["description"]),
+                f"missing Chinese label for default binding {b['description']!r}",
+            )
+
+    def test_catalog_presets_are_all_translated(self):
+        for preset in keybinds_manager.PRESET_CATALOG:
+            self.assertTrue(
+                keybinds_manager.localize_description(preset["name"]),
+                f"missing Chinese label for preset {preset['id']} ({preset['name']!r})",
+            )
+
+    def test_model_exposes_chinese_labels(self):
+        model = keybinds_manager.build_complete_model()
+        self.assertTrue(all("description_zh" in b for b in model["active"]))
+        self.assertTrue(all("name_zh" in p for p in model["catalog"]))
+
+    def test_category_counts_cover_every_row(self):
+        model = keybinds_manager.build_complete_model()
+        self.assertEqual(sum(model["category_counts"].values()), len(model["active"]))
+        self.assertTrue(all(b.get("category") for b in model["active"]))
+        # rows are grouped: category order never goes backwards
+        order = model["category_order"]
+        ranks = [order.index(b["category"]) if b["category"] in order else len(order) for b in model["active"]]
+        self.assertEqual(ranks, sorted(ranks))
+
+    def test_catalog_presets_use_current_categories(self):
+        model = keybinds_manager.build_complete_model()
+        valid = set(model["category_order"])
+        for preset in model["catalog"]:
+            self.assertIn(preset["category"], valid, f"preset {preset['id']} kept a stale category")
+
+    def test_overlay_binding_replacing_a_moved_default_is_not_dropped(self):
+        """Two overlay bindings may claim the same default (btop moved off its
+        default key, then the island took that key); both must stay visible."""
+        model = keybinds_manager.build_complete_model()
+        rows = [b for b in model["active"] if b.get("status") in ("modified", "custom")]
+        keys = {b["key"] for b in rows}
+        user = keybinds_manager.parse_user_bindings()
+        for ub in user["binds"]:
+            self.assertIn(ub["key"], keys, f"{ub['description']} is missing from the panel")
+
+
 
 if __name__ == "__main__":
     unittest.main()

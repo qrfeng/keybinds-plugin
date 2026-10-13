@@ -42,14 +42,28 @@ Item {
   property bool menuEntryChecked: false
   property bool launcherEntryInstalled: false
 
-  readonly property var categories: [
-    "All",
-    "Window Management",
-    "Workspaces",
-    "Menus & System",
-    "Applications",
-    "Media & Audio"
-  ]
+  // Filter chips come from the backend, so the buckets always match the
+  // classifier in backend/keybinds_manager.py (CATEGORY_ORDER) and carry a
+  // count of the rows clicking them would show. Categories with no bindings at
+  // all are skipped, except the one currently selected.
+  readonly property var categories: {
+    var active = (root.modelData && root.modelData.active) || []
+    var counts = (root.modelData && root.modelData.category_counts) || {}
+    var order = (root.modelData && root.modelData.category_order) || []
+    var out = [{ name: "All", count: active.length }]
+    var seen = {}
+    for (var i = 0; i < order.length; i++) {
+      var cat = order[i]
+      seen[cat] = true
+      if (counts[cat] || root.currentCategory === cat) {
+        out.push({ name: cat, count: counts[cat] || 0 })
+      }
+    }
+    for (var extra in counts) {
+      if (!seen[extra] && counts[extra]) out.push({ name: extra, count: counts[extra] })
+    }
+    return out
+  }
 
   function open(payloadJson) {
     closingFromHost = false
@@ -160,6 +174,70 @@ Item {
       .slice(0, 120)
   }
 
+  // Bindings keep their English descriptions on disk: they live in Omarchy's own
+  // files (rewritten by package updates) and in the island's generated
+  // island-bindings.lua, and the backend matches an override against the default
+  // it replaced by description. The Chinese text the backend adds is therefore a
+  // display-only overlay - the English original stays visible next to it, and any
+  // description missing from DESCRIPTION_ZH simply renders in English.
+  function titleOf(md) {
+    if (!md) return "Action"
+    return root.plainText(md.description_zh || md.description || "Action")
+  }
+
+  function originalOf(md) {
+    if (!md) return ""
+    var zh = String(md.description_zh || "")
+    var en = String(md.description || "")
+    return (zh.length > 0 && zh !== en) ? root.plainText(en) : ""
+  }
+
+  // One search box for all three lists: it matches the Chinese label as well as
+  // the English description, so both "工作区" and "workspace" find the same rows.
+  function matchesQuery(item, q) {
+    if (q.length === 0) return true
+    var fields = [item.key, item.default_key, item.description, item.description_zh,
+                  item.name, item.name_zh, item.category]
+    for (var i = 0; i < fields.length; i++) {
+      var value = String(fields[i] || "")
+      if (value.length > 0 && value.toLowerCase().indexOf(q) !== -1) return true
+    }
+    var cmd = String(item.command || item.action || "")
+    return cmd.toLowerCase().indexOf(q) !== -1
+  }
+
+  // Bindings the Island plugin owns. island-bindings.lua is required after the
+  // user's bindings.lua, so on a shared key the island wins: those rows are
+  // listed for completeness but must be edited in the island's own Settings ->
+  // Keybinds (or via `omarchy-keybinds island-set`), because the island
+  // regenerates the whole file and would drop anything written here.
+  readonly property color islandAccent: "#26A69A"
+
+  function managedByOther(md) {
+    return Boolean(md && (md.managed_by || md.disabled_by))
+  }
+
+  function rowCommandText(md) {
+    if (!md) return ""
+    var cmd = String(md.command || md.action || "")
+    if (md.shadowed_by) return "DEAD - " + md.shadowed_by + " rebinds this key: " + cmd
+    if (md.managed_by) return md.managed_by + "-managed: " + cmd
+    return cmd
+  }
+
+  // The backend refuses to write onto an island-held key (and reports any other
+  // failure the same way); surface that instead of claiming success.
+  function resultError(raw) {
+    try {
+      var parsed = JSON.parse(String(raw).trim())
+      if (parsed && parsed.success === false) return root.plainText(parsed.error || "Operation failed.")
+      if (parsed && parsed.reload && parsed.reload.config_errors) return "Saved, but Hyprland reported config errors."
+    } catch (e) {
+      console.warn("KeybindsPanel: could not parse backend json:", e)
+    }
+    return ""
+  }
+
   function clearFindHolds() {
     root.findHoldSuper = false
     root.findHoldCtrl = false
@@ -213,7 +291,8 @@ Item {
     return ""
   }
 
-  // Filtered active bindings (sorted alphabetically)
+  // Filtered active bindings (the backend returns them grouped by category,
+  // alphabetically inside each group, so filtering must preserve that order)
   readonly property var filteredActive: {
     var list = root.modelData.active || []
     var q = root.searchQuery.trim().toLowerCase()
@@ -227,15 +306,7 @@ Item {
       if (cat !== "All" && item.category !== cat) continue
 
       // Search filter
-      if (q.length > 0) {
-        var matchKey = item.key && item.key.toLowerCase().indexOf(q) !== -1
-        var matchDesc = item.description && item.description.toLowerCase().indexOf(q) !== -1
-        var matchCmd = (item.command && item.command.toLowerCase().indexOf(q) !== -1) ||
-                       (item.action && item.action.toLowerCase().indexOf(q) !== -1)
-        var matchCat = item.category && item.category.toLowerCase().indexOf(q) !== -1
-
-        if (!matchKey && !matchDesc && !matchCmd && !matchCat) continue
-      }
+      if (!root.matchesQuery(item, q)) continue
 
       res.push(item)
     }
@@ -254,15 +325,7 @@ Item {
       if (item.status !== "modified" && item.status !== "custom") continue
       if (cat !== "All" && item.category !== cat) continue
 
-      if (q.length > 0) {
-        var matchKey = item.key && item.key.toLowerCase().indexOf(q) !== -1
-        var matchDesc = item.description && item.description.toLowerCase().indexOf(q) !== -1
-        var matchCmd = (item.command && item.command.toLowerCase().indexOf(q) !== -1) ||
-                       (item.action && item.action.toLowerCase().indexOf(q) !== -1)
-        var matchCat = item.category && item.category.toLowerCase().indexOf(q) !== -1
-
-        if (!matchKey && !matchDesc && !matchCmd && !matchCat) continue
-      }
+      if (!root.matchesQuery(item, q)) continue
 
       res.push(item)
     }
@@ -281,12 +344,7 @@ Item {
 
       if (cat !== "All" && item.category !== cat) continue
 
-      if (q.length > 0) {
-        var matchName = item.name && item.name.toLowerCase().indexOf(q) !== -1
-        var matchDesc = item.description && item.description.toLowerCase().indexOf(q) !== -1
-        var matchKey = item.default_key && item.default_key.toLowerCase().indexOf(q) !== -1
-        if (!matchName && !matchDesc && !matchKey) continue
-      }
+      if (!root.matchesQuery(item, q)) continue
 
       res.push(item)
     }
@@ -325,8 +383,9 @@ Item {
       waitForEnd: true
       onStreamFinished: {
         root.loading = false
+        var failure = root.resultError(text)
         root.loadData()
-        root.showToast("Keybinding saved & applied to Hyprland!")
+        root.showToast(failure.length > 0 ? failure : "Keybinding saved & applied to Hyprland!")
       }
     }
   }
@@ -337,8 +396,9 @@ Item {
       waitForEnd: true
       onStreamFinished: {
         root.loading = false
+        var failure = root.resultError(text)
         root.loadData()
-        root.showToast("Keybinding reset to default!")
+        root.showToast(failure.length > 0 ? failure : "Keybinding reset to default!")
       }
     }
   }
@@ -349,8 +409,9 @@ Item {
       waitForEnd: true
       onStreamFinished: {
         root.loading = false
+        var failure = root.resultError(text)
         root.loadData()
-        root.showToast("Keybinding re-enabled!")
+        root.showToast(failure.length > 0 ? failure : "Keybinding re-enabled!")
       }
     }
   }
@@ -361,8 +422,9 @@ Item {
       waitForEnd: true
       onStreamFinished: {
         root.loading = false
+        var failure = root.resultError(text)
         root.loadData()
-        root.showToast("Keybinding disabled!")
+        root.showToast(failure.length > 0 ? failure : "Keybinding disabled!")
       }
     }
   }
@@ -722,11 +784,11 @@ Item {
 
               BorderSurface {
                 id: chip
-                required property string modelData
+                required property var modelData
                 height: Style.space(26)
                 width: chipLabel.implicitWidth + Style.space(20)
                 radius: Style.cornerRadius
-                readonly property bool isSelected: root.currentCategory === modelData
+                readonly property bool isSelected: root.currentCategory === chip.modelData.name
 
                 color: isSelected
                   ? Util.alpha(root.accent, 0.22)
@@ -741,14 +803,14 @@ Item {
                   anchors.fill: parent
                   hoverEnabled: true
                   cursorShape: Qt.PointingHandCursor
-                  onClicked: root.currentCategory = chip.modelData
+                  onClicked: root.currentCategory = chip.modelData.name
                 }
 
                 Text {
                   textFormat: Text.PlainText
                   id: chipLabel
                   anchors.centerIn: parent
-                  text: chip.modelData
+                  text: chip.modelData.count > 0 ? chip.modelData.name + " \u00b7 " + chip.modelData.count : chip.modelData.name
                   color: chip.isSelected ? root.accent : root.foreground
                   font.family: Style.font.family
                   font.pixelSize: Style.font.caption
@@ -820,7 +882,7 @@ Item {
             spacing: Style.space(8)
 
             // =========================================================
-            // --- TAB 1: ALL ACTIVE KEYBINDINGS (ALPHABETICAL) ---
+            // --- TAB 1: ALL ACTIVE KEYBINDINGS (GROUPED BY CATEGORY) ---
             // =========================================================
             ColumnLayout {
               visible: root.currentTab === "active"
@@ -830,185 +892,230 @@ Item {
               Repeater {
                 model: root.filteredActive
 
-                BorderSurface {
+                ColumnLayout {
                   id: activeRow
                   required property var modelData
+                  required property int index
                   Layout.fillWidth: true
-                  Layout.preferredHeight: Style.space(64)
-                  radius: Style.cornerRadius
-                  color: activeRowMouse.containsMouse
-                    ? Util.alpha(root.foreground, 0.06)
-                    : Util.alpha(root.foreground, 0.02)
-                  borderSpec: Border.flat(
-                    (modelData && modelData.is_conflict)
-                      ? root.urgent
-                      : (activeRowMouse.containsMouse ? Util.alpha(root.foreground, 0.25) : Util.alpha(root.foreground, 0.1)),
-                    (modelData && modelData.is_conflict) ? 1.5 : 1
-                  )
+                  spacing: Style.space(8)
 
-                  MouseArea {
-                    id: activeRowMouse
-                    anchors.fill: parent
-                    hoverEnabled: true
+                  // The backend sorts rows by category, so a section starts
+                  // wherever the category changes. With one category selected the
+                  // header would repeat on every row, so it only shows in "All".
+                  Text {
+                    Layout.fillWidth: true
+                    visible: root.currentCategory === "All"
+                      && (activeRow.index === 0
+                          || ((root.filteredActive[activeRow.index - 1] || {}).category
+                              !== (activeRow.modelData || {}).category))
+                    text: (activeRow.modelData && activeRow.modelData.category) || ""
+                    textFormat: Text.PlainText
+                    color: Util.alpha(root.accent, 0.9)
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                    font.bold: true
+                    topPadding: activeRow.index === 0 ? 0 : Style.space(8)
                   }
 
-                  RowLayout {
-                    anchors.fill: parent
-                    anchors.leftMargin: Style.space(16)
-                    anchors.rightMargin: Style.space(16)
-                    spacing: Style.space(14)
+                  BorderSurface {
+                    id: activeCard
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: Style.space(64)
+                    radius: Style.cornerRadius
+                    color: activeRowMouse.containsMouse
+                      ? Util.alpha(root.foreground, 0.06)
+                      : Util.alpha(root.foreground, 0.02)
+                    borderSpec: Border.flat(
+                      (activeRow.modelData && activeRow.modelData.is_conflict)
+                        ? root.urgent
+                        : (activeRowMouse.containsMouse ? Util.alpha(root.foreground, 0.25) : Util.alpha(root.foreground, 0.1)),
+                      (activeRow.modelData && activeRow.modelData.is_conflict) ? 1.5 : 1
+                    )
 
-                    // Status Badge Pill
-                    BorderSurface {
-                      Layout.preferredHeight: Style.space(22)
-                      Layout.preferredWidth: statusText.implicitWidth + Style.space(14)
-                      Layout.alignment: Qt.AlignVCenter
-                      radius: Style.cornerRadius
-
-                      readonly property string st: (activeRow.modelData && activeRow.modelData.status) || "default"
-                      readonly property bool isConf: Boolean(activeRow.modelData && activeRow.modelData.is_conflict)
-
-                      color: isConf
-                        ? Util.alpha(root.urgent, 0.2)
-                        : (st === "custom" ? Util.alpha("#4CAF50", 0.2)
-                          : (st === "modified" ? Util.alpha("#FF9800", 0.2)
-                            : (st === "disabled" ? Util.alpha(root.foreground, 0.1) : Util.alpha(root.foreground, 0.05))))
-
-                      borderSpec: Border.flat(
-                        isConf
-                          ? root.urgent
-                          : (st === "custom" ? "#4CAF50"
-                            : (st === "modified" ? "#FF9800"
-                              : (st === "disabled" ? Util.alpha(root.foreground, 0.3) : Util.alpha(root.foreground, 0.15)))),
-                        1
-                      )
-
-                      Text {
-                        textFormat: Text.PlainText
-                        id: statusText
-                        anchors.centerIn: parent
-                        text: (activeRow.modelData && activeRow.modelData.is_conflict)
-                          ? "⚠️ CONFLICT"
-                          : (activeRow.modelData && activeRow.modelData.status ? activeRow.modelData.status.toUpperCase() : "DEFAULT")
-                        color: (activeRow.modelData && activeRow.modelData.is_conflict)
-                          ? root.urgent
-                          : (activeRow.modelData && activeRow.modelData.status === "custom" ? "#4CAF50"
-                            : (activeRow.modelData && activeRow.modelData.status === "modified" ? "#FF9800"
-                              : (activeRow.modelData && activeRow.modelData.status === "disabled" ? Util.alpha(root.foreground, 0.4) : root.foreground)))
-                        font.family: Style.font.family
-                        font.pixelSize: Style.font.caption - 2
-                        font.bold: true
-                      }
+                    MouseArea {
+                      id: activeRowMouse
+                      anchors.fill: parent
+                      hoverEnabled: true
                     }
 
-                    // Action Info (Description, Command, Category)
-                    ColumnLayout {
-                      Layout.fillWidth: true
-                      Layout.alignment: Qt.AlignVCenter
-                      spacing: Style.space(2)
+                    RowLayout {
+                      anchors.fill: parent
+                      anchors.leftMargin: Style.space(16)
+                      anchors.rightMargin: Style.space(16)
+                      spacing: Style.space(14)
 
-                      RowLayout {
-                        spacing: Style.space(8)
+                      // Status Badge Pill
+                      BorderSurface {
+                        Layout.preferredHeight: Style.space(22)
+                        id: statusPill
+                        Layout.preferredWidth: statusText.implicitWidth + Style.space(14)
+                        Layout.alignment: Qt.AlignVCenter
+                        radius: Style.cornerRadius
+
+                        readonly property bool isManaged: Boolean(activeRow.modelData && activeRow.modelData.managed_by)
+                        readonly property string st: isManaged ? "island" : ((activeRow.modelData && activeRow.modelData.status) || "default")
+                        readonly property bool isConf: Boolean(activeRow.modelData && activeRow.modelData.is_conflict)
+
+                        color: isConf
+                          ? Util.alpha(root.urgent, 0.2)
+                          : (st === "island" ? Util.alpha(root.islandAccent, 0.2)
+                            : (st === "custom" ? Util.alpha("#4CAF50", 0.2)
+                              : (st === "modified" ? Util.alpha("#FF9800", 0.2)
+                                : (st === "disabled" ? Util.alpha(root.foreground, 0.1) : Util.alpha(root.foreground, 0.05)))))
+
+                        borderSpec: Border.flat(
+                          isConf
+                            ? root.urgent
+                            : (st === "island" ? root.islandAccent
+                              : (st === "custom" ? "#4CAF50"
+                                : (st === "modified" ? "#FF9800"
+                                  : (st === "disabled" ? Util.alpha(root.foreground, 0.3) : Util.alpha(root.foreground, 0.15))))),
+                          1
+                        )
 
                         Text {
-                          text: (activeRow.modelData && activeRow.modelData.description) || "Action"
                           textFormat: Text.PlainText
-                          color: (activeRow.modelData && activeRow.modelData.status === "disabled")
-                            ? Util.alpha(root.foreground, 0.4)
-                            : root.foreground
+                          id: statusText
+                          anchors.centerIn: parent
+                          text: (activeRow.modelData && activeRow.modelData.is_conflict)
+                            ? "⚠️ CONFLICT"
+                            : (statusPill.st === "island" ? "ISLAND"
+                              : (statusPill.st && statusPill.st !== "default" ? statusPill.st.toUpperCase() : "DEFAULT"))
+                          color: (activeRow.modelData && activeRow.modelData.is_conflict)
+                            ? root.urgent
+                            : (statusPill.st === "island" ? root.islandAccent
+                              : (statusPill.st === "custom" ? "#4CAF50"
+                                : (statusPill.st === "modified" ? "#FF9800"
+                                  : (statusPill.st === "disabled" ? Util.alpha(root.foreground, 0.4) : root.foreground))))
                           font.family: Style.font.family
-                          font.pixelSize: Style.font.body
+                          font.pixelSize: Style.font.caption - 2
                           font.bold: true
-                          font.strikeout: (activeRow.modelData && activeRow.modelData.status === "disabled")
                         }
+                      }
 
-                        // Category chip
-                        BorderSurface {
-                          Layout.preferredHeight: Style.space(16)
-                          Layout.preferredWidth: catLabel.implicitWidth + Style.space(8)
-                          radius: 3
-                          color: Util.alpha(root.foreground, 0.05)
-                          borderSpec: Border.flat(Util.alpha(root.foreground, 0.1), 1)
+                      // Action Info (Description, Command, Category)
+                      ColumnLayout {
+                        Layout.fillWidth: true
+                        Layout.alignment: Qt.AlignVCenter
+                        spacing: Style.space(2)
+
+                        RowLayout {
+                          spacing: Style.space(8)
 
                           Text {
-                            id: catLabel
-                            anchors.centerIn: parent
-                            text: (activeRow.modelData && activeRow.modelData.category) || "General"
+                            text: root.titleOf(activeRow.modelData)
                             textFormat: Text.PlainText
-                            color: Util.alpha(root.foreground, 0.5)
+                            color: (activeRow.modelData && activeRow.modelData.status === "disabled")
+                              ? Util.alpha(root.foreground, 0.4)
+                              : root.foreground
                             font.family: Style.font.family
-                            font.pixelSize: Style.font.caption - 3
+                            font.pixelSize: Style.font.body
+                            font.bold: true
+                            font.strikeout: (activeRow.modelData && activeRow.modelData.status === "disabled")
                           }
+
+                          // English original, kept for editing/searching by the real
+                          // description written to the config file
+                          Text {
+                            visible: root.originalOf(activeRow.modelData).length > 0
+                            Layout.fillWidth: true
+                            text: root.originalOf(activeRow.modelData)
+                            textFormat: Text.PlainText
+                            color: Util.alpha(root.foreground, 0.42)
+                            font.family: Style.font.family
+                            font.pixelSize: Style.font.caption
+                            elide: Text.ElideRight
+                          }
+
+                          // Category chip
+                          BorderSurface {
+                            Layout.preferredHeight: Style.space(16)
+                            Layout.preferredWidth: catLabel.implicitWidth + Style.space(8)
+                            radius: 3
+                            color: Util.alpha(root.foreground, 0.05)
+                            borderSpec: Border.flat(Util.alpha(root.foreground, 0.1), 1)
+
+                            Text {
+                              id: catLabel
+                              anchors.centerIn: parent
+                              text: (activeRow.modelData && activeRow.modelData.category) || "General"
+                              textFormat: Text.PlainText
+                              color: Util.alpha(root.foreground, 0.5)
+                              font.family: Style.font.family
+                              font.pixelSize: Style.font.caption - 3
+                            }
+                          }
+                        }
+
+                        Text {
+                          Layout.fillWidth: true
+                          text: root.rowCommandText(activeRow.modelData)
+                          textFormat: Text.PlainText
+                          color: Util.alpha(root.foreground, 0.5)
+                          font.family: Style.font.family
+                          font.pixelSize: Style.font.caption
+                          elide: Text.ElideRight
                         }
                       }
 
-                      Text {
-                        Layout.fillWidth: true
-                        text: (activeRow.modelData && (activeRow.modelData.command || activeRow.modelData.action)) || ""
-                        textFormat: Text.PlainText
-                        color: Util.alpha(root.foreground, 0.5)
-                        font.family: Style.font.family
-                        font.pixelSize: Style.font.caption
-                        elide: Text.ElideRight
-                      }
-                    }
-
-                    // Key Badge
-                    KeyBadge {
-                      Layout.alignment: Qt.AlignVCenter
-                      keyText: (activeRow.modelData && activeRow.modelData.key) || ""
-                      highlighted: Boolean(activeRow.modelData && activeRow.modelData.is_conflict)
-                      accent: (activeRow.modelData && activeRow.modelData.is_conflict) ? root.urgent : root.accent
-                    }
-
-                    // Action Buttons
-                    RowLayout {
-                      Layout.alignment: Qt.AlignVCenter
-                      spacing: Style.space(6)
-
-                      // Edit
-                      Button {
-                        iconText: "✏️"
-                        tooltipText: "Modify Keybinding"
-                        horizontalPadding: Style.space(8)
-                        verticalPadding: Style.space(4)
-                        onClicked: editDialog.openEdit(activeRow.modelData)
+                      // Key Badge
+                      KeyBadge {
+                        Layout.alignment: Qt.AlignVCenter
+                        keyText: (activeRow.modelData && activeRow.modelData.key) || ""
+                        highlighted: Boolean(activeRow.modelData && activeRow.modelData.is_conflict)
+                        accent: (activeRow.modelData && activeRow.modelData.is_conflict) ? root.urgent : root.accent
                       }
 
-                      // Enable (if disabled)
-                      Button {
-                        visible: Boolean(activeRow.modelData && activeRow.modelData.status === "disabled")
-                        text: "Enable"
-                        iconText: "✓"
-                        accent: "#4CAF50"
-                        tooltipText: "Re-enable Keybinding"
-                        horizontalPadding: Style.space(8)
-                        verticalPadding: Style.space(4)
-                        onClicked: root.enableKeybinding(activeRow.modelData.key)
-                      }
+                      // Action Buttons
+                      RowLayout {
+                        Layout.alignment: Qt.AlignVCenter
+                        spacing: Style.space(6)
 
-                      // Reset (if modified)
-                      Button {
-                        visible: Boolean(activeRow.modelData && activeRow.modelData.status === "modified")
-                        iconText: "↺"
-                        tooltipText: "Reset to Default (" + root.plainText(activeRow.modelData && activeRow.modelData.default_key) + ")"
-                        horizontalPadding: Style.space(8)
-                        verticalPadding: Style.space(4)
-                        onClicked: root.resetKeybinding(activeRow.modelData.key, activeRow.modelData.default_key)
-                      }
+                        // Edit
+                        Button {
+                          visible: !root.managedByOther(activeRow.modelData)
+                          iconText: "✏️"
+                          tooltipText: "Modify Keybinding"
+                          horizontalPadding: Style.space(8)
+                          verticalPadding: Style.space(4)
+                          onClicked: editDialog.openEdit(activeRow.modelData)
+                        }
 
-                      // Disable / Delete
-                      Button {
-                        visible: Boolean(activeRow.modelData && activeRow.modelData.status !== "disabled")
-                        iconText: (activeRow.modelData && activeRow.modelData.status === "custom") ? "🗑️" : "⊘"
-                        tooltipText: (activeRow.modelData && activeRow.modelData.status === "custom") ? "Delete custom binding" : "Disable default binding"
-                        horizontalPadding: Style.space(8)
-                        verticalPadding: Style.space(4)
-                        onClicked: {
-                          if (activeRow.modelData.status === "custom") {
-                            root.resetKeybinding(activeRow.modelData.key, "")
-                          } else {
-                            root.disableKeybinding(activeRow.modelData.key)
+                        // Enable (if disabled)
+                        Button {
+                          visible: Boolean(activeRow.modelData && activeRow.modelData.status === "disabled") && !root.managedByOther(activeRow.modelData)
+                          text: "Enable"
+                          iconText: "✓"
+                          accent: "#4CAF50"
+                          tooltipText: "Re-enable Keybinding"
+                          horizontalPadding: Style.space(8)
+                          verticalPadding: Style.space(4)
+                          onClicked: root.enableKeybinding(activeRow.modelData.key)
+                        }
+
+                        // Reset (if modified)
+                        Button {
+                          visible: Boolean(activeRow.modelData && activeRow.modelData.status === "modified") && !root.managedByOther(activeRow.modelData)
+                          iconText: "↺"
+                          tooltipText: "Reset to Default (" + root.plainText(activeRow.modelData && activeRow.modelData.default_key) + ")"
+                          horizontalPadding: Style.space(8)
+                          verticalPadding: Style.space(4)
+                          onClicked: root.resetKeybinding(activeRow.modelData.key, activeRow.modelData.default_key)
+                        }
+
+                        // Disable / Delete
+                        Button {
+                          visible: Boolean(activeRow.modelData && activeRow.modelData.status !== "disabled") && !root.managedByOther(activeRow.modelData)
+                          iconText: (activeRow.modelData && activeRow.modelData.status === "custom") ? "🗑️" : "⊘"
+                          tooltipText: (activeRow.modelData && activeRow.modelData.status === "custom") ? "Delete custom binding" : "Disable default binding"
+                          horizontalPadding: Style.space(8)
+                          verticalPadding: Style.space(4)
+                          onClicked: {
+                            if (activeRow.modelData.status === "custom") {
+                              root.resetKeybinding(activeRow.modelData.key, "")
+                            } else {
+                              root.disableKeybinding(activeRow.modelData.key)
+                            }
                           }
                         }
                       }
@@ -1109,20 +1216,22 @@ Item {
                     // Status Badge Pill
                     BorderSurface {
                       Layout.preferredHeight: Style.space(22)
+                      id: modStatusPill
                       Layout.preferredWidth: modStatusText.implicitWidth + Style.space(14)
                       Layout.alignment: Qt.AlignVCenter
                       radius: Style.cornerRadius
 
-                      readonly property string st: (modRow.modelData && modRow.modelData.status) || "modified"
-                      color: (st === "custom") ? Util.alpha("#4CAF50", 0.2) : Util.alpha("#FF9800", 0.2)
-                      borderSpec: Border.flat((st === "custom") ? "#4CAF50" : "#FF9800", 1)
+                      readonly property bool isManaged: Boolean(modRow.modelData && modRow.modelData.managed_by)
+                      readonly property string st: isManaged ? "island" : ((modRow.modelData && modRow.modelData.status) || "modified")
+                      color: (st === "island") ? Util.alpha(root.islandAccent, 0.2) : ((st === "custom") ? Util.alpha("#4CAF50", 0.2) : Util.alpha("#FF9800", 0.2))
+                      borderSpec: Border.flat((st === "island") ? root.islandAccent : ((st === "custom") ? "#4CAF50" : "#FF9800"), 1)
 
                       Text {
                         textFormat: Text.PlainText
                         id: modStatusText
                         anchors.centerIn: parent
-                        text: (modRow.modelData && modRow.modelData.status ? modRow.modelData.status.toUpperCase() : "MODIFIED")
-                        color: (modRow.modelData && modRow.modelData.status === "custom" ? "#4CAF50" : "#FF9800")
+                        text: (modStatusPill.st === "island" ? "ISLAND" : (modRow.modelData && modRow.modelData.status ? modRow.modelData.status.toUpperCase() : "MODIFIED"))
+                        color: (modStatusPill.st === "island" ? root.islandAccent : (modRow.modelData && modRow.modelData.status === "custom" ? "#4CAF50" : "#FF9800"))
                         font.family: Style.font.family
                         font.pixelSize: Style.font.caption - 2
                         font.bold: true
@@ -1139,12 +1248,23 @@ Item {
                         spacing: Style.space(8)
 
                         Text {
-                          text: (modRow.modelData && modRow.modelData.description) || "Action"
+                          text: root.titleOf(modRow.modelData)
                           textFormat: Text.PlainText
                           color: root.foreground
                           font.family: Style.font.family
                           font.pixelSize: Style.font.body
                           font.bold: true
+                        }
+
+                        Text {
+                          visible: root.originalOf(modRow.modelData).length > 0
+                          Layout.fillWidth: true
+                          text: root.originalOf(modRow.modelData)
+                          textFormat: Text.PlainText
+                          color: Util.alpha(root.foreground, 0.42)
+                          font.family: Style.font.family
+                          font.pixelSize: Style.font.caption
+                          elide: Text.ElideRight
                         }
 
                         BorderSurface {
@@ -1168,7 +1288,7 @@ Item {
 
                       Text {
                         Layout.fillWidth: true
-                        text: (modRow.modelData && (modRow.modelData.command || modRow.modelData.action)) || ""
+                        text: root.rowCommandText(modRow.modelData)
                         textFormat: Text.PlainText
                         color: Util.alpha(root.foreground, 0.5)
                         font.family: Style.font.family
@@ -1189,6 +1309,7 @@ Item {
                       spacing: Style.space(6)
 
                       Button {
+                        visible: !root.managedByOther(modRow.modelData)
                         iconText: "✏️"
                         tooltipText: "Modify Keybinding"
                         horizontalPadding: Style.space(8)
@@ -1197,7 +1318,7 @@ Item {
                       }
 
                       Button {
-                        visible: Boolean(modRow.modelData && modRow.modelData.status === "modified")
+                        visible: Boolean(modRow.modelData && modRow.modelData.status === "modified") && !root.managedByOther(modRow.modelData)
                         iconText: "↺"
                         tooltipText: "Reset to Default (" + root.plainText(modRow.modelData && modRow.modelData.default_key) + ")"
                         horizontalPadding: Style.space(8)
@@ -1206,7 +1327,7 @@ Item {
                       }
 
                       Button {
-                        visible: Boolean(modRow.modelData && modRow.modelData.status === "custom")
+                        visible: Boolean(modRow.modelData && modRow.modelData.status === "custom") && !root.managedByOther(modRow.modelData)
                         iconText: "🗑️"
                         tooltipText: "Delete custom binding"
                         horizontalPadding: Style.space(8)
@@ -1296,7 +1417,7 @@ Item {
                       spacing: Style.space(2)
 
                       Text {
-                        text: catalogRow.modelData.name
+                        text: root.plainText(catalogRow.modelData.name_zh || catalogRow.modelData.name)
                         textFormat: Text.PlainText
                         color: root.foreground
                         font.family: Style.font.family
@@ -1454,7 +1575,7 @@ Item {
                             spacing: Style.space(12)
 
                             Text {
-                              text: confSubRow.modelData.description || "Action"
+                              text: root.plainText(confSubRow.modelData.description_zh || confSubRow.modelData.description || "Action")
                               textFormat: Text.PlainText
                               color: root.foreground
                               font.family: Style.font.family
@@ -1588,6 +1709,9 @@ Item {
         }
         onCanceled: {
           menuEntryChecked = true
+          // ConfirmDialog never closes itself: without this, "Not now" leaves
+          // the first-run prompt on screen forever.
+          menuSetupDialog.opened = false
         }
       }
 

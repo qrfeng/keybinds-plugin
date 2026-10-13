@@ -19,6 +19,14 @@ import configparser
 
 DEFAULT_BINDINGS_DIR = os.environ.get("OMARCHY_PATH", "/usr/share/omarchy") + "/default/hypr/bindings"
 USER_BINDINGS_PATH = os.path.expanduser("~/.config/hypr/bindings.lua")
+# Written by the Island plugin (guilhermerisu.island), loaded right after the
+# user's own bindings.lua, so its keys win over both defaults and user edits.
+ISLAND_BINDINGS_PATH = os.path.expanduser("~/.config/hypr/island-bindings.lua")
+ISLAND_BINDINGS_SCRIPT = os.path.expanduser(
+    "~/.config/omarchy/plugins/guilhermerisu.island/companion/bindings.sh"
+)
+ISLAND_MANAGER_LABEL = "Island"
+FORCE_ISLAND_ENV = "OMARCHY_KEYBINDS_FORCE_ISLAND"
 CACHE_DIR = os.path.expanduser("~/.cache/omarchy")
 
 # Standard modifier weights for consistent ordering
@@ -133,6 +141,424 @@ def _parse_bind_line(line: str):
 
     return raw_key, desc, action, opts
 
+
+
+# ---------------------------------------------------------------------------
+# Categories
+#
+# Omarchy's own defaults only know which *file* a binding lives in (tiling.lua,
+# utilities.lua, ...), which dumps dozens of unrelated things into one bucket and
+# leaves every personal override in "Custom". This machine's bindings instead
+# follow a modifier convention, so categories are derived from the description +
+# command, first matching rule wins:
+#
+#   SUPER            move windows        SUPER+SHIFT+letter  launch an app
+#   SUPER+number     workspaces          SUPER+CTRL+letter   drive the system
+#   SUPER+ALT+letter second entry for the same thing
+#
+# CATEGORY_ORDER is the order the panel shows its filter chips in; KeybindsPanel.qml
+# builds the chips from the model, so adding a bucket here is enough. Keep every
+# label present here or a chip with nothing under it.
+# ---------------------------------------------------------------------------
+CATEGORY_WORKSPACE = "\U0001f5c2 Workspace"
+CATEGORY_WINDOW = "\U0001fa9f Window"
+CATEGORY_APP = "\U0001f680 App"
+CATEGORY_SYSTEM = "\u2699\ufe0f System"
+CATEGORY_DISPLAY = "\U0001f5a5 Display"
+CATEGORY_CAPTURE = "\U0001f4f8 Capture"
+CATEGORY_CLIPBOARD = "\u2702\ufe0f Clipboard"
+CATEGORY_MEDIA = "\U0001f3b5 Media"
+CATEGORY_NOTIFICATION = "\U0001f514 Notification"
+CATEGORY_VOICE = "\U0001f3a4 Voice"
+CATEGORY_ISLAND = "\U0001f9ca Island"
+CATEGORY_CUSTOM = "\U0001f9e9 Custom"
+
+CATEGORY_ORDER = [
+    CATEGORY_WORKSPACE,
+    CATEGORY_WINDOW,
+    CATEGORY_APP,
+    CATEGORY_SYSTEM,
+    CATEGORY_DISPLAY,
+    CATEGORY_CAPTURE,
+    CATEGORY_CLIPBOARD,
+    CATEGORY_MEDIA,
+    CATEGORY_NOTIFICATION,
+    CATEGORY_VOICE,
+    CATEGORY_ISLAND,
+    CATEGORY_CUSTOM,
+]
+
+# Old file-derived labels (and anything a hand-written entry still carries) map
+# onto the buckets above instead of becoming a 13th bucket.
+LEGACY_CATEGORY_MAP = {
+    "Window Management": CATEGORY_WINDOW,
+    "Workspaces": CATEGORY_WORKSPACE,
+    "Menus & System": CATEGORY_SYSTEM,
+    "Applications": CATEGORY_APP,
+    "Media & Audio": CATEGORY_MEDIA,
+    "Clipboard": CATEGORY_CLIPBOARD,
+    "AI & Voice": CATEGORY_VOICE,
+    "General": CATEGORY_SYSTEM,
+    "Custom": CATEGORY_CUSTOM,
+}
+
+# Matched against the description as a word prefix, in order, first hit wins.
+# ("play" would otherwise match "display", hence the leading word boundary.)
+_CATEGORY_DESC_RULES = [
+    (CATEGORY_CAPTURE, ("screenshot", "screenrecording", "capture", "ocr", "color picker", "webcam")),
+    (CATEGORY_NOTIFICATION, ("notification", "silencing")),
+    (CATEGORY_CLIPBOARD, ("clipboard", "universal copy", "universal paste", "universal cut", "emoji")),
+    (CATEGORY_VOICE, ("dictation", "voxtype", "voice")),
+    (CATEGORY_SYSTEM, ("touchpad", "lock", "reminder", "lid", "battery", "nightlight")),
+    (CATEGORY_WORKSPACE, ("workspace", "scratchpad")),
+    (CATEGORY_DISPLAY, ("brightness", "monitor", "laptop display", "scaling", "zoom", "clamshell", "resolution", "backlight")),
+    (CATEGORY_MEDIA, ("volume", "track", "mute", "play", "pause", "media", "audio", "eject")),
+    (CATEGORY_WINDOW, ("window", "full screen", "full width", "floating", "pseudo", "gaps", "transparency", "split", "tiling")),
+]
+
+# Anything launching a program, judged from the command so that two bindings
+# sharing a description ("Calendar" the web app vs "Calendar" the clock panel)
+# land in different buckets.
+_APP_COMMAND_MARKERS = (
+    "webapp =", "launch =", "tui =", "launch =",
+    "omarchy = \"terminal", "omarchy = \"browser", "omarchy = \"editor",
+    "omarchy = \"nautilus", "omarchy = \"signal", "omarchy = \"spotify",
+    "omarchy = \"1password", "omarchy-agent", "omacalc", "omarchy-launch",
+    "alacritty", "ghostty", "kitty", "obsidian", "omawrite",
+)
+
+# Descriptions that name an app but whose command is a plain shell command.
+_APP_DESC_WORDS = (
+    "terminal", "tmux", "herdr", "calculator", "browser", "editor", "file manager",
+    "docker", "obsidian", "omawrite", "agent", "music", "spotify", "signal",
+    "passwords", "chatgpt", "grok", "whatsapp", "youtube", "photos", "maps", "email",
+)
+
+
+def _desc_has(desc: str, words) -> bool:
+    return any(re.search(r"\b" + re.escape(w), desc) for w in words)
+
+
+def classify_binding(item: dict) -> str:
+    """Return the display category for one binding model entry.
+
+    Runs over every entry the model produces (defaults, modified, disabled,
+    user-written, island) so the buckets describe what a shortcut *does* rather
+    than which Omarchy file it came from.
+    """
+    if item.get("source") == "island":
+        return CATEGORY_ISLAND
+
+    desc = str(item.get("description") or "").lower()
+    cmd = str(item.get("command") or item.get("action") or "").lower()
+
+    # A launcher command is unambiguous, and checking it first keeps a TUI whose
+    # description happens to name a screen thing ("System monitor (btop)") out of
+    # the Display bucket.
+    if any(marker in cmd for marker in _APP_COMMAND_MARKERS):
+        return CATEGORY_APP
+
+    for category, words in _CATEGORY_DESC_RULES:
+        if _desc_has(desc, words):
+            return category
+
+    if _desc_has(desc, _APP_DESC_WORDS):
+        return CATEGORY_APP
+
+    if item.get("source") == "user":
+        return CATEGORY_CUSTOM
+
+    legacy = str(item.get("category") or "")
+    if legacy in LEGACY_CATEGORY_MAP and item.get("source") == "default":
+        return LEGACY_CATEGORY_MAP[legacy]
+
+    return CATEGORY_SYSTEM
+
+
+# ---------------------------------------------------------------------------
+# Chinese display labels
+#
+# The bindings themselves keep their English descriptions: they live in
+# /usr/share/omarchy (overwritten by package updates) and in
+# ~/.config/hypr/island-bindings.lua (regenerated by the island's own settings),
+# and the plugin matches defaults against overrides by description. So the
+# Chinese text is a display-only overlay: every model row also carries
+# `description_zh` and the panel renders that, falling back to the original
+# whenever a binding is not in the table below.
+#
+# Keys are lowercase; catalog preset names are Title Case versions of the same
+# phrases, so one table serves both. Unknown text is left alone on purpose -
+# a missing translation must never hide what a shortcut actually is.
+# ---------------------------------------------------------------------------
+DESCRIPTION_ZH = {
+    # --- workspaces -------------------------------------------------------
+    "next workspace": "下一个工作区",
+    "previous workspace": "上一个工作区",
+    "former workspace": "回到上一个待过的工作区",
+    "scroll active workspace forward": "滚轮切到下一个工作区",
+    "scroll active workspace backward": "滚轮切到上一个工作区",
+    "toggle workspace layout": "切换工作区布局",
+    "toggle scratchpad": "打开/收起暂存盘",
+    "move window to scratchpad": "把窗口放进暂存盘",
+    "move to scratchpad": "把窗口放进暂存盘",
+    "toggle special scratchpad": "打开/收起暂存盘",
+    "move workspace to left monitor": "把整个工作区搬到左屏",
+    "move workspace to right monitor": "把整个工作区搬到右屏",
+    "move workspace to up monitor": "把整个工作区搬到上屏",
+    "move workspace to down monitor": "把整个工作区搬到下屏",
+    # --- windows ----------------------------------------------------------
+    "focus on left window": "聚焦左侧窗口",
+    "focus on right window": "聚焦右侧窗口",
+    "focus on above window": "聚焦上方窗口",
+    "focus on below window": "聚焦下方窗口",
+    "focus on next window": "聚焦下一个窗口",
+    "focus window left": "聚焦左侧窗口",
+    "focus window right": "聚焦右侧窗口",
+    "focus window up": "聚焦上方窗口",
+    "focus window down": "聚焦下方窗口",
+    "previous visited workspace": "回到上一个待过的工作区",
+    "focus on previous window": "聚焦上一个窗口",
+    "reveal active window on top": "把当前窗口顶到最前",
+    "swap window to the left": "与左侧窗口交换",
+    "swap window to the right": "与右侧窗口交换",
+    "swap window up": "与上方窗口交换",
+    "swap window down": "与下方窗口交换",
+    "swap window left": "与左侧窗口交换",
+    "swap window right": "与右侧窗口交换",
+    "close window": "关闭当前窗口",
+    "kill window": "关闭当前窗口",
+    "close all windows": "关闭所有窗口",
+    "full screen": "全屏",
+    "toggle fullscreen": "全屏",
+    "tiled full screen": "平铺全屏",
+    "full width": "满宽（最大化）",
+    "toggle full width": "满宽（最大化）",
+    "toggle window floating/tiling": "浮动/平铺切换",
+    "toggle window floating": "浮动/平铺切换",
+    "pseudo window": "伪窗口（按内容尺寸）",
+    "pop window out (float & pin)": "弹出窗口（浮动+置顶）",
+    "pin active window": "弹出窗口（浮动+置顶）",
+    "toggle window split": "切换分屏方向",
+    "toggle split direction": "切换分屏方向",
+    "toggle window transparency": "切换窗口透明度",
+    "toggle window gaps": "切换窗口间隙",
+    "toggle single-window square aspect": "单窗口切成正方形",
+    "save window width": "记住窗口宽度",
+    "restore window width": "恢复窗口宽度",
+    "expand window left": "窗口变宽（左边界外扩 100px）",
+    "shrink window left": "窗口变窄（左边界内收 100px）",
+    "expand window down": "窗口变高（下边界外扩 100px）",
+    "shrink window up": "窗口变矮（上边界内收 100px）",
+    "expand window left a little": "窗口变宽一点（25px）",
+    "shrink window left a little": "窗口变窄一点（25px）",
+    "expand window down a little": "窗口变高一点（25px）",
+    "shrink window up a little": "窗口变矮一点（25px）",
+    "expand window left a lot": "窗口变宽很多（300px）",
+    "shrink window left a lot": "窗口变窄很多（300px）",
+    "expand window down a lot": "窗口变高很多（300px）",
+    "shrink window up a lot": "窗口变矮很多（300px）",
+    "move window": "拖动窗口（鼠标）",
+    "resize window": "缩放窗口（鼠标）",
+    "move window left": "移动窗口：左",
+    "move window right": "移动窗口：右",
+    "move window up": "移动窗口：上",
+    "move window down": "移动窗口：下",
+    "toggle window grouping": "开/关窗口分组",
+    "move active window out of group": "把当前窗口移出分组",
+    "move window to group on left": "把窗口并入左侧窗口的分组",
+    "move window to group on right": "把窗口并入右侧窗口的分组",
+    "move window to group on top": "把窗口并入上方窗口的分组",
+    "move window to group on bottom": "把窗口并入下方窗口的分组",
+    "next window in group": "分组内下一个窗口",
+    "previous window in group": "分组内上一个窗口",
+    "move grouped window focus left": "分组内焦点左移",
+    "move grouped window focus right": "分组内焦点右移",
+    # --- apps -------------------------------------------------------------
+    "terminal": "终端",
+    "tmux": "终端（tmux）",
+    "herdr": "终端（herdr）",
+    "browser": "浏览器",
+    "browser (private)": "浏览器（无痕）",
+    "editor": "编辑器",
+    "code editor": "编辑器",
+    "file manager": "文件管理器",
+    "file manager (cwd)": "文件管理器（当前目录）",
+    "file manager (active cwd)": "文件管理器（当前目录）",
+    "obsidian": "Obsidian 笔记",
+    "omawrite": "Omawrite 写作",
+    "docker": "Docker TUI",
+    "music": "音乐（Spotify）",
+    "music tui": "音乐 TUI（cliamp）",
+    "music tui (cliamp)": "音乐 TUI（cliamp）",
+    "passwords": "密码库（1Password）",
+    "signal": "Signal",
+    "calculator": "计算器",
+    "system monitor (btop)": "系统监控（btop）",
+    "agent": "AI Agent",
+    "agent usage": "Agent 用量看板",
+    "apps menu": "应用启动器",
+    "app launcher": "应用启动器",
+    "chatgpt": "网页版 ChatGPT",
+    "grok": "网页版 Grok",
+    "x": "网页版 X",
+    "x post": "网页版 X 发帖",
+    "youtube": "网页版 YouTube",
+    "google photos": "网页版 Google 相册",
+    "google maps": "网页版 Google 地图",
+    "google messages": "网页版 Google 信息",
+    "email": "网页版 hey 邮箱",
+    "new email": "网页版 hey 写新邮件",
+    "calendar": "网页版 hey 日历",
+    "whatsapp": "网页版 WhatsApp",
+    # --- system -----------------------------------------------------------
+    "lock system": "锁屏",
+    "power menu": "电源菜单",
+    "system / power menu": "电源菜单",
+    "power": "电源面板",
+    "toggle locking on idle": "开/关空闲自动锁屏",
+    "toggle nightlight": "开/关夜览",
+    "hardware menu": "硬件菜单",
+    "toggle menu": "切换悬浮菜单",
+    "omarchy menu": "Omarchy 菜单",
+    "theme menu": "主题菜单",
+    "themes": "主题",
+    "wallpapers": "壁纸",
+    "background switcher": "背景切换器",
+    "toggle menu bar": "显示/隐藏顶栏",
+    "toggle top bar": "显示/隐藏顶栏",
+    "audio": "音频面板",
+    "bluetooth": "蓝牙面板",
+    "display": "显示器面板",
+    "share": "分享（localsend）",
+    "transcode": "媒体转码",
+    "set reminder": "设置提醒",
+    "clear reminders": "清空提醒",
+    "show reminders": "显示提醒",
+    "show time": "显示时间",
+    "show battery remaining": "显示剩余电量",
+    "toggle weather": "显示天气",
+    "disable touchpad": "禁用触控板",
+    "enable touchpad": "启用触控板",
+    "toggle touchpad": "开/关触控板",
+    "keybindings": "快捷键一览",
+    "keybindings manager": "快捷键管理器（GUI）",
+    "keybindings helper": "快捷键一览",
+    "tmux keybindings": "tmux 快捷键一览",
+    "herdr keybindings": "herdr 快捷键一览",
+    "emoji": "表情面板",
+    "emojis": "表情面板",
+    "activity": "系统监控（btop）",
+    "network": "网络面板",
+    "system menu": "系统菜单",
+    "emoji picker": "表情面板",
+    "clipboard": "剪贴板历史",
+    "clipboard manager": "剪贴板历史",
+    "screensaver": "屏保",
+    # --- display ----------------------------------------------------------
+    "brightness up": "亮度 +",
+    "brightness down": "亮度 −",
+    "brightness up precise": "亮度 +（微调 1%）",
+    "brightness down precise": "亮度 −（微调 1%）",
+    "brightness maximum": "亮度最亮",
+    "brightness minimum": "亮度最暗",
+    "raise brightness": "亮度 +",
+    "lower brightness": "亮度 −",
+    "keyboard brightness up": "键盘背光 +",
+    "keyboard brightness down": "键盘背光 −",
+    "keyboard backlight cycle": "键盘背光循环切换",
+    "monitor scaling up": "屏幕缩放 +",
+    "monitor scaling down": "屏幕缩放 −",
+    "toggle laptop display": "开/关笔记本内屏",
+    "toggle laptop display mirroring": "开/关内屏镜像",
+    "omarchy-hyprland-monitor-clamshell": "合盖显示模式切换",
+    "omarchy-system-lid-close": "合盖动作",
+    "zoom in": "放大镜：放大",
+    "reset zoom": "放大镜：复位",
+    "focus on next monitor": "切到下一个显示器",
+    "focus on previous monitor": "切到上一个显示器",
+    "focus next monitor": "切到下一个显示器",
+    # --- capture ----------------------------------------------------------
+    "screenshot": "截图",
+    "capture screenshot": "截图",
+    "screenrecording": "录屏",
+    "toggle screenrecording": "录屏",
+    "capture menu": "截图/录制菜单",
+    "extract text (ocr) from screenshot": "截图 OCR 取字",
+    "ocr text from screen": "截图 OCR 取字",
+    "color picker": "屏幕取色器",
+    "make webcam overlay larger": "摄像头浮窗放大",
+    "make webcam overlay smaller": "摄像头浮窗缩小",
+    # --- clipboard --------------------------------------------------------
+    "universal copy": "万能复制",
+    "universal paste": "万能粘贴",
+    "universal cut": "万能剪切",
+    # --- media ------------------------------------------------------------
+    "play": "播放",
+    "pause": "暂停",
+    "play / pause media": "播放/暂停",
+    "next track": "下一曲",
+    "previous track": "上一曲",
+    "mute": "静音",
+    "mute audio": "静音",
+    "mute microphone": "麦克风静音",
+    "volume up": "音量 +",
+    "volume down": "音量 −",
+    "volume up precise": "音量 +（微调）",
+    "volume down precise": "音量 −（微调）",
+    "switch audio output": "切换音频输出设备",
+    "switch media source": "切换播放源",
+    "eject media": "弹出光碟/介质",
+    # --- notifications ----------------------------------------------------
+    "dismiss last notification": "关掉最后一条通知",
+    "dismiss all notifications": "关掉所有通知",
+    "invoke last notification": "打开最后一条通知的内容",
+    "open notification history": "打开通知历史",
+    "toggle silencing notifications": "开/关通知免打扰",
+    # --- voice ------------------------------------------------------------
+    "start dictation (push-to-talk)": "开始听写（按住说话）",
+    "stop dictation (push-to-talk)": "结束听写（按住说话）",
+    "toggle dictation": "开/关听写",
+}
+
+# Numbered families generated by Lua loops (and their catalog twins) - one rule
+# each instead of dozens of near-duplicate dictionary entries.
+_DESCRIPTION_ZH_PATTERNS = [
+    (re.compile(r"^switch to workspace (\d+)$"), "切到工作区 {}"),
+    (re.compile(r"^move window to workspace (\d+) \(silent\)$"), "静默把窗口送到工作区 {}（不跟随）"),
+    (re.compile(r"^move window to workspace (\d+)$"), "把窗口送到工作区 {}（跟随）"),
+    (re.compile(r"^move window silently to workspace (\d+)$"), "静默把窗口送到工作区 {}（不跟随）"),
+    (re.compile(r"^switch to group window (\d+)$"), "切到分组内第 {} 个窗口"),
+    (re.compile(r"^bar panel (\d+)$"), "打开状态栏第 {} 个面板"),
+]
+
+
+def localize_description(text: str) -> str:
+    """Chinese label for a binding description / preset name ('' if unknown).
+
+    Matching is case-insensitive so the Title Case catalog preset names share
+    the table with the lowercase descriptions coming from the Lua configs.
+    """
+    key = str(text or "").strip().lower()
+    if not key:
+        return ""
+    hit = DESCRIPTION_ZH.get(key)
+    if hit:
+        return hit
+    for pattern, template in _DESCRIPTION_ZH_PATTERNS:
+        m = pattern.match(key)
+        if m:
+            return template.format(*m.groups())
+    return ""
+
+
+def category_sort_key(binding: dict):
+    """Sort key: CATEGORY_ORDER first, then description, then key."""
+    cat = binding.get("category") or ""
+    try:
+        idx = CATEGORY_ORDER.index(cat)
+    except ValueError:
+        idx = len(CATEGORY_ORDER)
+    return (idx, binding.get("description", "").lower(), binding.get("key", ""))
 
 
 PRESET_CATALOG = [
@@ -796,6 +1222,37 @@ def get_installed_apps():
 
 
 
+# ``code:N`` chords. Omarchy generates the workspace 1-10 and resize families by
+# looping over raw keycodes, and a panel that renders "SUPER + code:10" is
+# unreadable. N here is an XKB keycode, i.e. the kernel evdev code + 8 (see
+# /usr/share/xkeyboard-config-2/keycodes/evdev). Translating both sides also makes
+# a literal ``hl.unbind("SUPER + code:10")`` in the user config match the
+# ``SUPER + 1`` it disables.
+CODE_KEY_NAMES = {}
+for _i in range(9):  # 1..9
+    CODE_KEY_NAMES[str(10 + _i)] = str(_i + 1)
+CODE_KEY_NAMES["19"] = "0"
+for _i, _ch in enumerate("QWERTYUIOP"):
+    CODE_KEY_NAMES[str(24 + _i)] = _ch
+for _i, _ch in enumerate("ASDFGHJKL"):
+    CODE_KEY_NAMES[str(38 + _i)] = _ch
+for _i, _ch in enumerate("ZXCVBNM"):
+    CODE_KEY_NAMES[str(52 + _i)] = _ch
+CODE_KEY_NAMES.update({
+    "20": "minus", "21": "equal", "22": "BACKSPACE", "23": "TAB", "34": "bracketleft",
+    "35": "bracketright", "36": "RETURN", "48": "semicolon", "49": "grave",
+    "51": "backslash", "65": "SPACE", "9": "ESCAPE", "66": "CAPS_LOCK",
+})
+
+
+def decode_code_key(main_key: str) -> str:
+    """Turn ``code:10`` into the physical key it names, else return it unchanged."""
+    m = re.fullmatch(r"code:(\d+)", main_key.strip(), re.IGNORECASE)
+    if not m:
+        return main_key
+    return CODE_KEY_NAMES.get(m.group(1), main_key.strip().lower())
+
+
 def normalize_key_chord(key_chord: str) -> str:
     """Normalize a key combination string to standard 'MOD1 + MOD2 + KEY' format."""
     if not key_chord:
@@ -854,6 +1311,7 @@ def normalize_key_chord(key_chord: str) -> str:
     }
 
     if main_key:
+        main_key = decode_code_key(main_key)
         upper_k = main_key.upper()
         lower_k = main_key.lower()
         if upper_k in ("RETURN", "ENTER", "SPACE", "ESCAPE", "TAB", "BACKSPACE", "DELETE", "PRINT"):
@@ -905,6 +1363,18 @@ def get_mouse_scroll_settings():
     return settings
 
 
+def category_for_file(fname: str) -> str:
+    """Legacy bucket name for a default-bindings file (see classify_binding)."""
+    return {
+        "applications": "Applications",
+        "tiling": "Window Management",
+        "media": "Media & Audio",
+        "utilities": "Menus & System",
+        "clipboard": "Clipboard",
+        "voxtype": "AI & Voice",
+    }.get(fname[:-4] if fname.endswith(".lua") else fname, "General")
+
+
 def parse_default_bindings():
     """Parse all default keybindings shipped with Omarchy."""
     bindings = []
@@ -945,20 +1415,7 @@ def parse_default_bindings():
             if not desc:
                 desc = action_raw.strip('"\'')
 
-            cat = "General"
-            base = fname.replace(".lua", "")
-            if base == "applications":
-                cat = "Applications"
-            elif base == "tiling":
-                cat = "Window Management"
-            elif base == "media":
-                cat = "Media & Audio"
-            elif base == "utilities":
-                cat = "Menus & System"
-            elif base == "clipboard":
-                cat = "Clipboard"
-            elif base == "voxtype":
-                cat = "AI & Voice"
+            cat = category_for_file(fname)
 
             is_release = opts_raw and ("on_release = true" in opts_raw or "on_release=true" in opts_raw)
 
@@ -974,7 +1431,342 @@ def parse_default_bindings():
                 "is_release": is_release,
             })
 
+        # Bindings a Lua for-loop writes (workspace 1-10, group windows, bar
+        # panels) are invisible to the line parser above, so materialise them
+        # here; otherwise the panel is silently missing ~44 shortcuts, including
+        # every SUPER + <number> workspace switch.
+        try:
+            looped = expand_loop_binds(content, fname)
+        except Exception as e:  # never lose the whole file over one loop
+            print(f"keybinds_manager: loop expansion failed for {fname}: {e}", file=sys.stderr)
+            looped = []
+        for entry in looped:
+            norm_key = normalize_key_chord(entry["raw_key"])
+            if not norm_key:
+                continue
+            bindings.append({
+                "source": "default",
+                "file": fname,
+                "key": norm_key,
+                "raw_key": entry["raw_key"],
+                "description": entry["description"],
+                "action": entry["action"],
+                "category": category_for_file(fname),
+                "is_mouse": "mouse" in entry["raw_key"].lower(),
+                "is_release": False,
+                "loop_generated": True,
+            })
+
     return bindings
+
+
+_LOOP_FOR_RE = re.compile(r"^\s*for\s+(\w+)\s*=\s*(-?\d+)\s*,\s*(-?\d+)\s+do\s*$")
+
+
+def _split_lua_args(text):
+    """Split a Lua argument list at top-level commas (string/brace aware)."""
+    args, depth, cur, in_str, esc = [], 0, "", None, False
+    for ch in text:
+        if in_str:
+            cur += ch
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == in_str:
+                in_str = None
+            continue
+        if ch in "\"'":
+            in_str = ch
+            cur += ch
+            continue
+        if ch in "({[":
+            depth += 1
+        elif ch in ")}]":
+            depth -= 1
+        if ch == "," and depth == 0:
+            args.append(cur.strip())
+            cur = ""
+        else:
+            cur += ch
+    if cur.strip():
+        args.append(cur.strip())
+    return args
+
+
+def _split_lua_concat(expr: str):
+    """Split a Lua concatenation chain at top-level '..' (string/paren aware)."""
+    parts, cur, depth, in_str, esc = [], "", 0, None, False
+    i = 0
+    while i < len(expr):
+        ch = expr[i]
+        if in_str:
+            cur += ch
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == in_str:
+                in_str = None
+            i += 1
+            continue
+        if ch in "\"'":
+            in_str = ch
+            cur += ch
+            i += 1
+            continue
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        if depth == 0 and expr.startswith("..", i):
+            parts.append(cur.strip())
+            cur = ""
+            i += 2
+            continue
+        cur += ch
+        i += 1
+    parts.append(cur.strip())
+    return parts
+
+
+def _strip_outer_parens(expr: str) -> str:
+    """Drop redundant wrapping parens, e.g. ("code:" .. n) -> "code:" .. n."""
+    expr = expr.strip()
+    while expr.startswith("(") and expr.endswith(")"):
+        depth, wrapped = 0, True
+        for pos, ch in enumerate(expr):
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0 and pos != len(expr) - 1:
+                    wrapped = False
+                    break
+        if not wrapped:
+            break
+        expr = expr[1:-1].strip()
+    return expr
+
+
+def _substitute_outside_strings(expr: str, name: str, replacement: str) -> str:
+    """Replace whole-word ``name`` outside string literals with ``replacement``.
+
+    Local-key substitution must not touch text inside quotes, or a description
+    like "Switch to key window " would get the loop value pasted into it.
+    """
+    word = re.compile(r"\b" + re.escape(name) + r"\b")
+    out, i, in_str = [], 0, None
+    while i < len(expr):
+        ch = expr[i]
+        if in_str:
+            if ch == "\\":
+                out.append(expr[i:i + 2])
+                i += 2
+                continue
+            out.append(ch)
+            if ch == in_str:
+                in_str = None
+            i += 1
+            continue
+        if ch in "\"'":
+            in_str = ch
+            out.append(ch)
+            i += 1
+            continue
+        m = word.match(expr, i)
+        if m:
+            out.append(replacement)
+            i = m.end()
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _inline_loop_var(expr: str, var: str, index: int) -> str:
+    """Best-effort inlining of the loop number into a dispatch expression.
+
+    Only used for display (the third o.bind argument), so a miss is cosmetic.
+    """
+    def repl(match):
+        step = int(match.group(2)) if match.group(2) else 0
+        if match.group(1) == "-":
+            step = -step
+        return str(index + step)
+
+    expr = re.sub(
+        r"tostring\(\s*" + re.escape(var) + r"\s*(?:([+-])\s*(\d+))?\s*\)",
+        repl,
+        expr,
+    )
+    return re.sub(r"\b" + re.escape(var) + r"\b", str(index), expr)
+
+
+def _lua_concat_value(expr: str, var: str, index: int, _depth: int = 0):
+    """Evaluate a Lua expression made of literals, concat chains and one loop var.
+
+    Covers what Omarchy's binding loops actually write, including the nested form
+    the workspace loop uses ("SUPER + " .. key with key = "code:" ..
+    tostring(workspace + 9)). Anything requiring real Lua evaluation returns
+    None and the caller skips that binding.
+    """
+    expr = _strip_outer_parens(expr)
+    if not expr or _depth > 8:
+        return None
+
+    parts = _split_lua_concat(expr)
+    if len(parts) > 1:
+        joined = []
+        for part in parts:
+            value = _lua_concat_value(part, var, index, _depth + 1)
+            if value is None:
+                return None
+            joined.append(value)
+        return "".join(joined)
+
+    if len(expr) >= 2 and expr[0] in "\"'" and expr[-1] == expr[0]:
+        return expr[1:-1]
+
+    m = re.fullmatch(r"tostring\(\s*" + re.escape(var) + r"\s*(?:([+-])\s*(\d+))?\s*\)", expr)
+    if m:
+        step = int(m.group(2)) if m.group(2) else 0
+        if m.group(1) == "-":
+            step = -step
+        return str(index + step)
+
+    m = re.fullmatch(re.escape(var) + r"\s*(?:([+-])\s*(\d+))?", expr)
+    if m:
+        step = int(m.group(2)) if m.group(2) else 0
+        if m.group(1) == "-":
+            step = -step
+        return str(index + step)
+
+    if re.fullmatch(r"-?\d+", expr):
+        return expr
+
+    if expr.startswith(("hl.", "o.", "{")):
+        return _inline_loop_var(expr, var, index)
+    return None
+
+
+def _lua_statements(body_lines):
+    """Join physical lines into logical statements (a bind may span 6 lines)."""
+    statements, buf, depth, in_str, esc = [], "", 0, None, False
+    for raw in body_lines:
+        line = raw.strip()
+        if not line or line.startswith("--"):
+            continue
+        buf = (buf + " " + line) if buf else line
+        for ch in line:
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == in_str:
+                    in_str = None
+                continue
+            if ch in "\"'":
+                in_str = ch
+                continue
+            if ch in "([{":
+                depth += 1
+            elif ch in ")]}":
+                depth -= 1
+        if depth <= 0 and in_str is None:
+            statements.append(buf.strip())
+            buf, depth = "", 0
+    if buf.strip():
+        statements.append(buf.strip())
+    return statements
+
+
+_LOOP_LOCAL_RE = re.compile(r"^local\s+(\w+)\s*=\s*(.+?)\s*$")
+_LOOP_BIND_RE = re.compile(r"^o\.bind(?:_toggle)?\((.*)\)\s*$", re.DOTALL)
+
+
+def expand_loop_binds(content, fname):
+    """Materialise bindings written by a Lua for-loop.
+
+    Omarchy generates workspace 1-10, "Switch to group window" and "Bar panel"
+    bindings inside loops, and a line-based parser cannot see any of them, which
+    made the panel silently under-report ~44 bindings. Only loops whose arguments
+    reduce to literals plus the loop variable are expanded; anything cleverer is
+    skipped. Returns [{"file", "raw_key", "description", "action"}].
+    """
+    lines = content.splitlines()
+    out = []
+    i = 0
+    while i < len(lines):
+        m = _LOOP_FOR_RE.match(lines[i])
+        if not m:
+            i += 1
+            continue
+        var, start, stop = m.group(1), int(m.group(2)), int(m.group(3))
+        indent = len(lines[i]) - len(lines[i].lstrip())
+        body = []
+        j = i + 1
+        while j < len(lines):
+            stripped = lines[j].strip()
+            cur_indent = len(lines[j]) - len(lines[j].lstrip())
+            if stripped == "end" and cur_indent == indent:
+                break
+            body.append(lines[j])
+            j += 1
+
+        local_exprs, call_args = [], []
+        for stmt in _lua_statements(body):
+            lm = _LOOP_LOCAL_RE.match(stmt)
+            if lm:
+                local_exprs.append((lm.group(1), lm.group(2)))
+                continue
+            bm = _LOOP_BIND_RE.match(stmt)
+            if bm:
+                try:
+                    call_args.append(_split_lua_args(bm.group(1)))
+                except Exception:
+                    continue
+
+        for index in range(start, stop + 1):
+            locals_values = {}
+            for name, expr in local_exprs:
+                merged = expr
+                for known, value in locals_values.items():
+                    if value is None:
+                        continue
+                    merged = _substitute_outside_strings(merged, known, '"' + value + '"')
+                locals_values[name] = _lua_concat_value(merged, var, index)
+
+            for args in call_args:
+                if len(args) < 3:
+                    continue
+                exprs, ok = [], True
+                for arg in args[:3]:
+                    merged = arg
+                    for name, value in locals_values.items():
+                        if re.search(r"\b" + re.escape(name) + r"\b", merged):
+                            if value is None:
+                                ok = False
+                                break
+                            merged = _substitute_outside_strings(merged, name, '"' + value + '"')
+                    if not ok:
+                        break
+                    value = _lua_concat_value(merged, var, index)
+                    if value is None:
+                        ok = False
+                        break
+                    exprs.append(value)
+                if not ok or len(exprs) < 3:
+                    continue
+                out.append({
+                    "file": fname,
+                    "raw_key": exprs[0],
+                    "description": exprs[1],
+                    "action": exprs[2],
+                })
+        i = j + 1
+    return out
 
 
 def parse_user_bindings():
@@ -1033,24 +1825,208 @@ def parse_user_bindings():
     return result
 
 
+_ISLAND_LINE_RE = re.compile(
+    r"^(?P<off>--\s*off:\s*)?island\(\s*\"([^\"]+)\"\s*,\s*\"([^\"]*)\"\s*,\s*\"([^\"]*)\"\s*\)\s*$"
+)
+# The file's helper prepends a fixed IPC prefix to every action argument:
+#   o.bind(keys, description, "omarchy-shell guilhermerisu.island " .. command)
+# Read it back instead of hardcoding it, so the model shows the real command.
+_ISLAND_PREFIX_RE = re.compile(r'"([^"]*island\s+)"\s*\.\.\s*command')
+_ISLAND_PREFIX_DEFAULT = "omarchy-shell guilhermerisu.island "
+
+
+def parse_island_bindings():
+    """
+    Parse ~/.config/hypr/island-bindings.lua, the file the Island plugin writes.
+
+    Every live line is ``island("KEY", "Description", "show keybinds")``, which the
+    file's own helper expands to ``hl.unbind(KEY)`` + ``o.bind(...)``. Lines the
+    island prefixes with ``-- off:`` belong to disabled addons: their keys are
+    reported, but they are NOT active bindings.
+
+    Read-only by design. The island regenerates this whole file from its own
+    Settings -> Keybinds store, so editing it behind the island's back gets
+    overwritten; mutate it through companion/bindings.sh instead (see
+    ``island_set_keybinding``).
+    """
+    result = {"binds": [], "unbinds": set(), "off_keys": set()}
+    if not os.path.isfile(ISLAND_BINDINGS_PATH):
+        return result
+
+    try:
+        with open(ISLAND_BINDINGS_PATH, "r", encoding="utf-8") as f:
+            content = f.read(MAX_FILE_BYTES)
+    except Exception:
+        return result
+
+    prefix_found = _ISLAND_PREFIX_RE.search(content)
+    prefix = prefix_found.group(1) if prefix_found else _ISLAND_PREFIX_DEFAULT
+
+    for line in content.splitlines():
+        m = _ISLAND_LINE_RE.match(line.strip())
+        if not m:
+            continue
+        raw_key = m.group(2).strip()
+        desc = m.group(3).strip()
+        command = m.group(4).strip()
+        norm_key = normalize_key_chord(raw_key)
+        if not norm_key:
+            continue
+        if m.group("off"):
+            result["off_keys"].add(norm_key)
+            continue
+        full_command = prefix + command
+        result["unbinds"].add(norm_key)
+        result["binds"].append({
+            "source": "island",
+            "file": os.path.basename(ISLAND_BINDINGS_PATH),
+            "key": norm_key,
+            "raw_key": raw_key,
+            "description": desc or command,
+            "action": '"' + full_command + '"',
+            "command": full_command,
+            "category": "Island",
+            "is_mouse": False,
+            "is_release": False,
+            "managed_by": ISLAND_MANAGER_LABEL,
+            "managed_file": ISLAND_BINDINGS_PATH,
+            "read_only": True,
+        })
+
+    return result
+
+
+def island_keybinding_actions():
+    """The island's own action list (id, label, keys, command, addon), straight
+    from its companion helper so addon-disabled actions and ids stay accurate."""
+    actions = []
+    if os.path.isfile(ISLAND_BINDINGS_SCRIPT):
+        try:
+            res = subprocess.run(
+                ["bash", ISLAND_BINDINGS_SCRIPT, "list"],
+                capture_output=True, text=True, timeout=15,
+            )
+            for line in res.stdout.splitlines():
+                parts = line.split("\t")
+                if len(parts) < 5:
+                    continue
+                actions.append({
+                    "id": parts[0],
+                    "label": parts[1],
+                    "keys": parts[2],
+                    "command": parts[3],
+                    "addon": parts[4],
+                })
+        except Exception:
+            actions = []
+    return actions
+
+
+def island_set_keybinding(action_id: str, keys: str):
+    """Rebind (or clear, with an empty ``keys``) an island action through the
+    island's own helper, which owns that file and rewrites it atomically."""
+    if not os.path.isfile(ISLAND_BINDINGS_SCRIPT):
+        return {
+            "success": False,
+            "error": f"Island helper not found: {ISLAND_BINDINGS_SCRIPT}",
+        }
+    try:
+        res = subprocess.run(
+            ["bash", ISLAND_BINDINGS_SCRIPT, "set", action_id, keys],
+            capture_output=True, text=True, timeout=60,
+        )
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+    try:
+        errs = subprocess.run(["hyprctl", "configerrors"], capture_output=True, text=True, timeout=10)
+        config_errors = errs.stdout.strip() if errs.returncode == 0 else ""
+    except Exception:
+        config_errors = ""
+
+    return {
+        "success": res.returncode == 0,
+        "id": action_id,
+        "keys": keys,
+        "output": (res.stdout + res.stderr).strip(),
+        "config_errors": config_errors,
+    }
+
+
+def _island_clash(norm_key: str, island_state=None):
+    """The island binding that owns ``norm_key``, if any."""
+    state = island_state if island_state is not None else parse_island_bindings()
+    return next((b for b in state["binds"] if b["key"] == norm_key), None)
+
+
+def _island_block(norm_key: str, clash) -> dict:
+    return {
+        "success": False,
+        "key": norm_key,
+        "managed_by": ISLAND_MANAGER_LABEL,
+        "error": (
+            f"'{norm_key}' is held by the island action '{clash['description']}' "
+            f"({ISLAND_BINDINGS_PATH}), which Hyprland loads after "
+            f"{USER_BINDINGS_PATH}, so a binding written here would never fire. "
+            f"Change it in the island's Settings -> Keybinds, or run: "
+            f"omarchy-keybinds island-set <id> '{norm_key}' "
+            f"(ids: omarchy-keybinds island). "
+            f"Set {FORCE_ISLAND_ENV}=1 to write it anyway."
+        ),
+    }
+
+
 def build_complete_model():
     """
     Construct the unified model of active bindings, catalog, conflicts, and mouse scroll settings.
     """
     default_binds = parse_default_bindings()
     user_state = parse_user_bindings()
+    island_state = parse_island_bindings()
 
-    rebound_defaults_map = {}
-    matched_user_bind_keys = set()
-
+    # hyprland.lua requires hypr.bindings *before* hypr.island-bindings, so on a
+    # shared key the island wins and the user's line is dead code. Pull such
+    # user entries out of the overlay and report them alongside the island entry
+    # so the conflict view names the dead binding instead of hiding it.
+    island_by_key = {b["key"]: b for b in island_state["binds"]}
+    shadowed_binds = []
+    overlay_binds = []
     for ub in user_state["binds"]:
-        matched = next(
-            (d for d in default_binds if d["description"].lower() == ub["description"].lower() or d["action"] == ub["action"]),
-            None
-        )
+        clash = island_by_key.get(ub["key"])
+        if clash:
+            dead = dict(ub)
+            dead["shadowed_by"] = ISLAND_MANAGER_LABEL
+            dead["shadowed_action"] = clash["action"]
+            shadowed_binds.append(dead)
+        else:
+            overlay_binds.append(ub)
+    overlay_binds.extend(island_state["binds"])
+    active_unbinds = user_state["unbinds"] | island_state["unbinds"]
+
+    # An overlay binding "claims" the default it replaced, and its row is rendered
+    # in that default's place. Two overlay binds can legitimately claim the same
+    # default: here the user moved btop off SUPER + CTRL + T and the island then
+    # took that key for Themes. Keeping a single claim per default silently
+    # dropped the user's btop row, so claims are collected per default key and
+    # every claimant gets its own row.
+    rebound_defaults = {}
+    for ub in overlay_binds:
+        if ub.get("source") == "island":
+            # The island helper always unbinds and rebinds the *same* chord, so
+            # match its takeover against that key only. Matching by description
+            # across keys would, for example, hand island's SUPER+ESCAPE
+            # 'Power menu' the untouched XF86PowerOff default and drop it from
+            # the list entirely.
+            matched = next((d for d in default_binds if d["key"] == ub["key"]), None)
+        else:
+            matched = next(
+                (d for d in default_binds if d["description"].lower() == ub["description"].lower() or d["action"] == ub["action"]),
+                None
+            )
         if matched:
-            rebound_defaults_map[matched["key"]] = ub
-            matched_user_bind_keys.add(ub["key"])
+            rebound_defaults.setdefault(matched["key"], []).append(ub)
+
+    matched_user_bind_keys = {claim["key"] for claims in rebound_defaults.values() for claim in claims}
 
     all_active = []
 
@@ -1058,17 +2034,17 @@ def build_complete_model():
     for d in default_binds:
         k = d["key"]
 
-        if k in rebound_defaults_map:
-            ub = rebound_defaults_map[k]
-            item = dict(ub)
-            item["status"] = "modified"
-            item["category"] = d.get("category", "Custom")
-            item["default_key"] = k
-            item["default_action"] = d.get("action", "")
-            all_active.append(item)
+        if k in rebound_defaults:
+            for ub in rebound_defaults[k]:
+                item = dict(ub)
+                item["status"] = "modified"
+                item["category"] = d.get("category", "Custom")
+                item["default_key"] = k
+                item["default_action"] = d.get("action", "")
+                all_active.append(item)
             continue
 
-        same_key_user_bind = next((ub for ub in user_state["binds"] if ub["key"] == k and ub["key"] not in matched_user_bind_keys), None)
+        same_key_user_bind = next((ub for ub in overlay_binds if ub["key"] == k and ub["key"] not in matched_user_bind_keys), None)
         if same_key_user_bind:
             item = dict(same_key_user_bind)
             item["status"] = "modified" if same_key_user_bind["description"].lower() == d["description"].lower() else "custom"
@@ -1079,10 +2055,12 @@ def build_complete_model():
             matched_user_bind_keys.add(k)
             continue
 
-        if k in user_state["unbinds"]:
+        if k in active_unbinds:
             item = dict(d)
             item["status"] = "disabled"
             item["default_key"] = k
+            if k in island_state["unbinds"]:
+                item["disabled_by"] = ISLAND_MANAGER_LABEL
             all_active.append(item)
             continue
 
@@ -1091,20 +2069,34 @@ def build_complete_model():
         item["default_key"] = k
         all_active.append(item)
 
-    # 2. Append custom user bindings
-    for ub in user_state["binds"]:
+    # 2. Append custom bindings from the overlay layer (user file, then island)
+    for ub in overlay_binds:
         if ub["key"] in matched_user_bind_keys:
             continue
         item = dict(ub)
         item["status"] = "custom"
+        item["category"] = ub.get("category") or "Custom"
+        item["default_key"] = ""
+        all_active.append(item)
+
+    # 3. Island overrides: live in the user file but never fire, since the island
+    #    rebinds the same key afterwards. Keep them visible and conflicting.
+    for ub in shadowed_binds:
+        item = dict(ub)
+        item["status"] = "modified"
         item["category"] = "Custom"
         item["default_key"] = ""
         all_active.append(item)
 
-    # 3. Sort Alphabetically by Description (case-insensitive)
-    all_active.sort(key=lambda x: (x.get("description", "").lower(), x.get("key", "")))
+    # 4. Categorize, then group by category with alphabetical order inside each
+    #    group, so the "All" view reads as one section per category.
+    for b in all_active:
+        b["category"] = classify_binding(b)
+        b["description_zh"] = localize_description(b.get("description", ""))
 
-    # 4. Detect Real Key Conflicts
+    all_active.sort(key=category_sort_key)
+
+    # 5. Detect Real Key Conflicts
     conflicts_dict = {}
     key_groups = {}
     for b in all_active:
@@ -1123,11 +2115,19 @@ def build_complete_model():
         if len(group) > 1 and not is_intentional_composite:
             for b in group:
                 b["is_conflict"] = True
-                b["conflict_with"] = [other["description"] for other in group if other != b]
+                b["conflict_with"] = [
+                    {"description": other["description"], "description_zh": localize_description(other["description"])}
+                    for other in group if other != b
+                ]
             conflicts_dict[k] = {
                 "key": k,
                 "bindings": [
-                    {"description": x["description"], "action": x["action"], "status": x.get("status", "unknown")}
+                    {
+                        "description": x["description"],
+                        "description_zh": localize_description(x["description"]),
+                        "action": x["action"],
+                        "status": x.get("status", "unknown"),
+                    }
                     for x in group
                 ],
             }
@@ -1137,7 +2137,7 @@ def build_complete_model():
 
     conflicts = list(conflicts_dict.values())
 
-    # 5. Available Catalog (sorted alphabetically by name)
+    # 6. Available Catalog (sorted alphabetically by name)
     bound_descriptions = {b["description"].lower() for b in all_active if b.get("status") != "disabled"}
     catalog = []
 
@@ -1150,6 +2150,17 @@ def build_complete_model():
                 break
 
         cat_item = dict(preset)
+        cat_item["name_zh"] = localize_description(preset.get("name", ""))
+        # Re-bucket presets with the same rules as live bindings, otherwise the
+        # catalog keeps the legacy file names and no chip ever matches them.
+        cat_item["category"] = classify_binding(
+            {
+                "description": preset.get("name") or preset.get("description", ""),
+                "action": preset.get("command", ""),
+                "category": preset.get("category", ""),
+                "source": "default",
+            }
+        )
         cat_item["is_bound"] = is_bound
         cat_item["current_key"] = curr_key
         catalog.append(cat_item)
@@ -1158,8 +2169,17 @@ def build_complete_model():
 
     total_modified = len([b for b in all_active if b.get("status") in ("modified", "custom")])
 
+    # Chip counts: every row the "All" list actually shows, including the
+    # disabled (unbound) ones, so a chip's number matches what clicking it gives.
+    category_counts = {}
+    for b in all_active:
+        cat = b.get("category") or CATEGORY_CUSTOM
+        category_counts[cat] = category_counts.get(cat, 0) + 1
+
     return {
         "active": all_active,
+        "category_order": CATEGORY_ORDER,
+        "category_counts": category_counts,
         "catalog": catalog,
         "conflicts": conflicts,
         "apps": get_installed_apps(),
@@ -1168,6 +2188,9 @@ def build_complete_model():
         "total_conflicts": len(conflicts),
         "mouse_settings": get_mouse_scroll_settings(),
         "user_bindings_file": USER_BINDINGS_PATH,
+        "island_bindings_file": ISLAND_BINDINGS_PATH if os.path.isfile(ISLAND_BINDINGS_PATH) else "",
+        "total_island": len(island_state["binds"]),
+        "total_shadowed": len(shadowed_binds),
     }
 
 
@@ -1365,6 +2388,11 @@ def set_keybinding(key: str, description: str, command: str, action: str = "", o
     if not norm_key:
         return {"success": False, "error": "Invalid key combination"}
 
+    island_state = parse_island_bindings()
+    clash = _island_clash(norm_key, island_state)
+    if clash and not os.environ.get(FORCE_ISLAND_ENV):
+        return _island_block(norm_key, clash)
+
     default_binds = parse_default_bindings()
     keys_to_clean = [norm_key]
     unbinds_to_add = []
@@ -1426,6 +2454,9 @@ def reset_keybinding(key: str, default_key: str = ""):
 def disable_keybinding(key: str):
     """Disable/unbind a keybinding."""
     norm_key = normalize_key_chord(key)
+    clash = _island_clash(norm_key)
+    if clash and not os.environ.get(FORCE_ISLAND_ENV):
+        return _island_block(norm_key, clash)
     write_user_bindings(unbinds_to_add=[norm_key], keys_to_remove=[norm_key])
     reload_status = reload_hyprland()
     return {"success": reload_status.get("success", False), "key": norm_key, "reload": reload_status}
@@ -1446,6 +2477,58 @@ def _strip_jsonc_comments(text: str) -> str:
     for line in text.splitlines():
         lines.append(_JSONC_LINE_COMMENT_RE.sub('', line))
     return '\n'.join(lines)
+
+
+def _drop_trailing_commas(text: str) -> str:
+    """Remove commas that sit directly before a closing } or ].
+
+    The launcher config is shared with other plugins (the island appends its own
+    rows and leaves a trailing comma), and strict json.loads rejects that while
+    the menu's own reader accepts it. String-aware, so a ", }" inside a label is
+    left alone.
+    """
+    out = []
+    in_string = False
+    escape_next = False
+    for i, ch in enumerate(text):
+        if in_string:
+            out.append(ch)
+            if escape_next:
+                escape_next = False
+            elif ch == "\\":
+                escape_next = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+            out.append(ch)
+            continue
+        if ch == ',':
+            j = i + 1
+            while j < len(text) and text[j] in ' \t\r\n':
+                j += 1
+            if j < len(text) and text[j] in '}]':
+                continue
+        out.append(ch)
+    return ''.join(out)
+
+
+def _jsonc_loads(text: str):
+    """Parse the launcher JSONC, tolerating comments and trailing commas.
+
+    Raises ValueError when the file is genuinely unreadable, so callers can
+    refuse to write instead of replacing a config they cannot understand.
+    """
+    stripped = _strip_jsonc_comments(text)
+    try:
+        return json.loads(stripped)
+    except (json.JSONDecodeError, ValueError):
+        pass
+    try:
+        return json.loads(_drop_trailing_commas(stripped))
+    except (json.JSONDecodeError, ValueError) as e:
+        raise ValueError(f"cannot parse {MENU_CONFIG_PATH}: {e}")
 
 
 def _safe_read_regular_file(path: str):
@@ -1491,15 +2574,19 @@ def _safe_atomic_write_file(path: str, content: str):
 
 def check_menu_entry():
     """Return whether the launcher menu entry already exists."""
-    contents = _safe_read_regular_file(MENU_CONFIG_PATH)
-    if contents is None:
-        return {"exists": False}
     try:
-        stripped = _strip_jsonc_comments(contents)
-        data = json.loads(stripped)
-    except (json.JSONDecodeError, ValueError):
-        data = {}
-    return {"exists": MENU_ENTRY_KEY in data}
+        contents = _safe_read_regular_file(MENU_CONFIG_PATH)
+    except (ValueError, OSError) as e:
+        # Reported instead of silently meaning "not installed": a false negative
+        # here makes the panel nag for a launcher entry that is already there.
+        return {"exists": False, "error": str(e), "path": MENU_CONFIG_PATH}
+    if contents is None:
+        return {"exists": False, "path": MENU_CONFIG_PATH, "reason": "file missing"}
+    try:
+        data = _jsonc_loads(contents)
+    except ValueError as e:
+        return {"exists": False, "error": str(e), "path": MENU_CONFIG_PATH, "reason": "unparseable"}
+    return {"exists": MENU_ENTRY_KEY in data, "path": MENU_CONFIG_PATH}
 
 
 def install_menu_entry():
@@ -1508,10 +2595,11 @@ def install_menu_entry():
     data = {}
     if contents is not None:
         try:
-            stripped = _strip_jsonc_comments(contents)
-            data = json.loads(stripped)
-        except (json.JSONDecodeError, ValueError):
-            data = {}
+            data = _jsonc_loads(contents)
+        except ValueError as e:
+            # Never rewrite a config we cannot read: this file is shared, and an
+            # empty dict here used to silently delete every other plugin's rows.
+            return {"success": False, "message": str(e)}
     if MENU_ENTRY_KEY in data:
         return {"success": True, "message": "Menu entry already exists."}
     data[MENU_ENTRY_KEY] = dict(MENU_ENTRY_VALUE)
@@ -1526,10 +2614,9 @@ def remove_menu_entry():
     if contents is None:
         return {"success": True, "message": "Config file not found — nothing to remove."}
     try:
-        stripped = _strip_jsonc_comments(contents)
-        data = json.loads(stripped)
-    except (json.JSONDecodeError, ValueError):
-        data = {}
+        data = _jsonc_loads(contents)
+    except ValueError as e:
+        return {"success": False, "message": str(e)}
     if MENU_ENTRY_KEY not in data:
         return {"success": True, "message": "Menu entry not present — nothing to remove."}
     del data[MENU_ENTRY_KEY]
@@ -1587,6 +2674,23 @@ def main():
 
     elif cmd == "reload":
         res = reload_hyprland()
+        print(json.dumps(res))
+
+    elif cmd == "island":
+        state = parse_island_bindings()
+        print(json.dumps({
+            "file": ISLAND_BINDINGS_PATH if os.path.isfile(ISLAND_BINDINGS_PATH) else "",
+            "helper": ISLAND_BINDINGS_SCRIPT if os.path.isfile(ISLAND_BINDINGS_SCRIPT) else "",
+            "bindings": state["binds"],
+            "addon_disabled_keys": sorted(state["off_keys"]),
+            "actions": island_keybinding_actions(),
+        }, indent=2))
+
+    elif cmd == "island-set":
+        if len(sys.argv) < 3:
+            print(json.dumps({"success": False, "error": "Usage: island-set <action-id> [keys]"}))
+            sys.exit(1)
+        res = island_set_keybinding(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else "")
         print(json.dumps(res))
 
     elif cmd == "menu-check":
