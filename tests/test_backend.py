@@ -416,5 +416,145 @@ class TestKeybindsBackend(unittest.TestCase):
 
 
 
+
+class TestTerminalLayer(unittest.TestCase):
+    """The read-only ghostty/herdr layers (see the terminal-layer section in the backend).
+
+    These exist because a herdr binding can be perfectly valid and still do
+    nothing: ghostty consumes the key first. That bug hid for months as "alt+3
+    just doesn't work", so the parsers and the shadow pass are covered here.
+    """
+
+    def test_canonical_chord_folds_all_three_layers(self):
+        fold = keybinds_manager.canonical_chord
+        self.assertEqual(fold("SUPER + MINUS"), fold("super+-"))
+        self.assertEqual(fold("CTRL + ALT + LEFT"), fold("ctrl+alt+arrow_left"))
+        self.assertEqual(fold("ALT + 3"), fold("alt+digit_3"))
+        self.assertEqual(fold("CTRL + SHIFT + COMMA"), fold("ctrl+shift+,"))
+        self.assertEqual(fold("performable:alt+1"), fold("alt+1"))
+        self.assertEqual(fold("alt+shift+enter"), "ALT + SHIFT + RETURN")
+        self.assertEqual(fold("ctrl++"), "CTRL + PLUS")
+        self.assertEqual(fold("ctrl+="), "CTRL + EQUAL")
+        self.assertEqual(fold("prefix+z"), "Z")  # callers strip `prefix+` first
+        self.assertEqual(fold("copy"), "")  # ghostty pseudo-trigger, not a chord
+        self.assertEqual(fold(""), "")
+
+    def test_ghostty_keybind_pairs(self):
+        pairs = list(keybinds_manager._keybind_pairs(
+            "# comment\n"
+            "keybind = ctrl+,=open_config\n"
+            "keybind = ctrl+==increase_font_size:1\n"
+            "keybind = alt+3=unbind\n"
+            "keybind = ctrl+a=new_window\n"
+            "keybind = chain=goto_split:left\n"
+            "keybind = clear\n"
+            "font-size = 9\n"
+        ))
+        self.assertIn(("ctrl+,", "open_config"), pairs)
+        self.assertIn(("ctrl+=", "increase_font_size:1"), pairs)
+        self.assertIn(("alt+3", "unbind"), pairs)
+        self.assertEqual([p for p in pairs if p[0] == "ctrl+a"], [("ctrl+a", "new_window")])
+        self.assertFalse(any("chain" in t for t, _ in pairs))
+
+    def test_ghostty_unbound_row_is_read_only_and_names_its_old_action(self):
+        with tempfile.NamedTemporaryFile("w+", delete=False, suffix=".conf") as tmp:
+            path = tmp.name
+        try:
+            with open(path, "w") as f:
+                f.write("keybind = alt+3=unbind\n")
+            old_cfg, old_cli = keybinds_manager.GHOSTTY_CONFIG_PATH, keybinds_manager._run_cli
+            keybinds_manager.GHOSTTY_CONFIG_PATH = path
+            keybinds_manager._run_cli = lambda argv, timeout=8: (
+                "keybind = alt+3=goto_tab:3\n" if "--default" in argv else ""
+            )
+            rows = keybinds_manager.parse_ghostty_keybinds()
+        finally:
+            keybinds_manager.GHOSTTY_CONFIG_PATH = old_cfg
+            keybinds_manager._run_cli = old_cli
+            os.unlink(path)
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["status"], "disabled")
+        self.assertEqual(row["key"], "ALT + 3")
+        self.assertEqual(row["managed_by"], keybinds_manager.GHOSTTY_MANAGER_LABEL)
+        self.assertEqual(row["default_action"], "goto_tab:3")
+        self.assertIn("已解绑", row["description_zh"])
+        self.assertIn("标签页", row["description_zh"])
+
+    def test_herdr_rows_expand_ranges_and_tag_prefix_chords(self):
+        with tempfile.NamedTemporaryFile("w+", delete=False, suffix=".toml") as tmp:
+            path = tmp.name
+        try:
+            with open(path, "w") as f:
+                f.write('[keys]\nprefix = "ctrl+space"\n'
+                        'switch_tab = ["prefix+1..3", "alt+1..3"]\n'
+                        'zoom = "prefix+z"\n')
+            old_path = keybinds_manager.HERDR_CONFIG_PATH
+            keybinds_manager.HERDR_CONFIG_PATH = path
+            rows = keybinds_manager.parse_herdr_keybinds()
+        finally:
+            keybinds_manager.HERDR_CONFIG_PATH = old_path
+            os.unlink(path)
+        by_key = {r["key"]: r for r in rows}
+        self.assertIn("PREFIX + 3", by_key)
+        self.assertIn("ALT + 3", by_key)
+        self.assertTrue(by_key["PREFIX + 3"]["herdr_prefix_chord"])
+        self.assertFalse(by_key["ALT + 3"]["herdr_prefix_chord"])
+        self.assertIn("第 3 个", by_key["ALT + 3"]["description_zh"])
+        self.assertEqual(by_key["CTRL + SPACE"]["action"], "prefix")
+        self.assertEqual(by_key["PREFIX + Z"]["managed_by"], keybinds_manager.HERDR_MANAGER_LABEL)
+        self.assertEqual(by_key["PREFIX + Z"]["category"], keybinds_manager.CATEGORY_HERDR)
+
+    def test_classify_binding_keeps_layer_rows_in_their_layer(self):
+        self.assertEqual(
+            keybinds_manager.classify_binding({"source": "ghostty", "category": keybinds_manager.CATEGORY_TERMINAL,
+                                               "description": "ghostty: close_tab", "action": "close_tab"}),
+            keybinds_manager.CATEGORY_TERMINAL)
+        self.assertEqual(
+            keybinds_manager.classify_binding({"source": "herdr", "category": keybinds_manager.CATEGORY_HERDR,
+                                               "description": "herdr: close_tab", "action": "close_tab"}),
+            keybinds_manager.CATEGORY_HERDR)
+
+    def test_shadow_pass_names_the_layer_that_steals_the_key(self):
+        hypr = {"key": "SUPER + CTRL + J", "description": "x", "action": "y", "status": "default"}
+        ghost_stolen = {"key": "SUPER + CTRL + J", "raw_key": "super+ctrl+j", "source": "ghostty",
+                        "layer": "terminal", "status": "default", "action": "new_split:right"}
+        ghost_encoder = {"key": "ALT + SHIFT + RETURN", "raw_key": "alt+shift+enter", "source": "ghostty",
+                         "layer": "terminal", "status": "default", "action": "csi:13;4u"}
+        herdr_direct = {"key": "ALT + SHIFT + RETURN", "raw_key": "alt+shift+enter", "source": "herdr",
+                        "layer": "herdr", "status": "default", "action": "split_vertical"}
+        herdr_prefix = {"key": "PREFIX + Z", "raw_key": "prefix+z", "source": "herdr", "layer": "herdr",
+                        "status": "default", "action": "zoom", "herdr_prefix_chord": True}
+        rows = [hypr, ghost_stolen, ghost_encoder, herdr_direct, herdr_prefix]
+        keybinds_manager.annotate_layer_shadows(rows)
+        # ghostty's own row is dead because the WM owns SUPER+CTRL+J ...
+        self.assertEqual(ghost_stolen["shadowed_by"], "Hyprland")
+        # ... but a csi: re-encoder forwards the key, so herdr really does get it.
+        self.assertNotIn("shadowed_by", ghost_encoder)
+        self.assertNotIn("shadowed_by", herdr_direct)
+        self.assertNotIn("shadowed_by", herdr_prefix)
+        self.assertNotIn("shadowed_by", hypr)
+
+    def test_real_model_exposes_both_layers_without_touching_hyprland_totals(self):
+        model = keybinds_manager.build_complete_model()
+        for field in ("total_terminal", "total_terminal_unbound", "total_herdr", "total_shadows",
+                      "ghostty_config_file", "herdr_config_file"):
+            self.assertIn(field, model)
+        counts = model["category_counts"]
+        self.assertIn(keybinds_manager.CATEGORY_TERMINAL, counts)
+        self.assertIn(keybinds_manager.CATEGORY_HERDR, counts)
+        self.assertEqual(model["category_order"].index(keybinds_manager.CATEGORY_TERMINAL)
+                         < model["category_order"].index(keybinds_manager.CATEGORY_HERDR), True)
+        layer_rows = [b for b in model["active"] if b.get("layer")]
+        self.assertGreater(len(layer_rows), 0)
+        # Read-only: managed_by is the flag KeybindsPanel.qml uses to hide buttons,
+        # and the panel's "Modified & Custom" section filters on these statuses.
+        for row in layer_rows:
+            self.assertTrue(row.get("managed_by"), row["key"])
+            self.assertIn(row["status"], ("default", "disabled"), row["key"])
+        # Hyprland-side conflict detection must stay blind to cross-layer shadows.
+        self.assertEqual([b for b in layer_rows if b.get("is_conflict")], [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -172,6 +172,10 @@ CATEGORY_NOTIFICATION = "\U0001f514 Notification"
 CATEGORY_VOICE = "\U0001f3a4 Voice"
 CATEGORY_ISLAND = "\U0001f9ca Island"
 CATEGORY_CUSTOM = "\U0001f9e9 Custom"
+# Read-only layers that live *inside* the terminal window rather than in Hyprland.
+# Their names stay parenthesised so a chip never reads like a Hyprland bucket.
+CATEGORY_TERMINAL = "\u2328\ufe0f Terminal (ghostty)"
+CATEGORY_HERDR = "\U0001f916 Terminal (herdr)"
 
 CATEGORY_ORDER = [
     CATEGORY_WORKSPACE,
@@ -185,6 +189,8 @@ CATEGORY_ORDER = [
     CATEGORY_NOTIFICATION,
     CATEGORY_VOICE,
     CATEGORY_ISLAND,
+    CATEGORY_TERMINAL,
+    CATEGORY_HERDR,
     CATEGORY_CUSTOM,
 ]
 
@@ -246,6 +252,10 @@ def classify_binding(item: dict) -> str:
     user-written, island) so the buckets describe what a shortcut *does* rather
     than which Omarchy file it came from.
     """
+    # Terminal-layer rows are bucketed by layer, never by what they do: a
+    # ghostty "close_tab" and a herdr "close_tab" must not land in App.
+    if item.get("source") in ("ghostty", "herdr"):
+        return item.get("category") or CATEGORY_TERMINAL
     if item.get("source") == "island":
         return CATEGORY_ISLAND
 
@@ -1976,6 +1986,493 @@ def _island_block(norm_key: str, clash) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Read-only view of the two layers that live *inside* the terminal window.
+#
+# A keystroke on this machine is offered to three owners, outermost first:
+#
+#   1. Hyprland  - owns the SUPER chords; anything it grabs never reaches a window.
+#   2. ghostty   - its own config; a bound key is consumed here unless the entry
+#                  says `=unbind`, which forwards the key inward.
+#   3. herdr     - the workspace manager inside ghostty; it only ever sees what
+#                  the two layers above left behind.
+#
+# Rows below are informational. They carry `managed_by`, which KeybindsPanel.qml
+# already treats as "read-only" (it hides the edit/reset/delete buttons for such
+# rows), and `shadowed_by`, which the panel renders as "DEAD - <layer> rebinds
+# this key". Two rows in *different* layers sharing a chord is a shadow, not a
+# Hyprland conflict, so layer rows are skipped by the conflict pass and annotated
+# here instead - that tripwire is how the 2026-10-13 finding (herdr's alt+1..9 and
+# ctrl+alt+arrow "second entry" bindings were being eaten by ghostty's defaults)
+# becomes visible instead of silently doing nothing.
+# ---------------------------------------------------------------------------
+GHOSTTY_CONFIG_PATH = os.path.expanduser("~/.config/ghostty/config")
+HERDR_CONFIG_PATH = os.path.expanduser("~/.config/herdr/config.toml")
+GHOSTTY_MANAGER_LABEL = "ghostty config"
+HERDR_MANAGER_LABEL = "herdr config"
+_GHOSTTY_TRIGGER_PREFIXES = ("global:", "all:", "performable:", "unconsumed:", "physical:")
+
+_CHORD_MODS = {
+    "SUPER": "SUPER", "WIN": "SUPER", "LOGO": "SUPER", "META": "SUPER", "MOD4": "SUPER",
+    "CMD": "SUPER", "COMMAND": "SUPER",
+    "CTRL": "CTRL", "CONTROL": "CTRL", "CONTROL_L": "CTRL", "CONTROL_R": "CTRL",
+    "ALT": "ALT", "ALT_L": "ALT", "ALT_R": "ALT", "MOD1": "ALT", "OPTION": "ALT",
+    "SHIFT": "SHIFT", "SHIFT_L": "SHIFT", "SHIFT_R": "SHIFT",
+}
+_CHORD_MOD_ORDER = {"SUPER": 1, "CTRL": 2, "ALT": 3, "SHIFT": 4}
+_CHORD_KEYS = {
+    "ENTER": "RETURN", "ESC": "ESCAPE", "ARROW_LEFT": "LEFT", "ARROW_RIGHT": "RIGHT",
+    "ARROW_UP": "UP", "ARROW_DOWN": "DOWN", "PG_UP": "PAGE_UP", "PG_DOWN": "PAGE_DOWN",
+    "-": "MINUS", "=": "EQUAL", ",": "COMMA", ".": "PERIOD", "/": "SLASH", ";": "SEMICOLON",
+    "'": "APOSTROPHE", "\\": "BACKSLASH", "`": "GRAVE", "+": "PLUS",
+    "[": "LEFTBRACKET", "]": "RIGHTBRACKET", "BRACKETLEFT": "LEFTBRACKET",
+    "BRACKETRIGHT": "RIGHTBRACKET", "COMMA": "COMMA", "PERIOD": "PERIOD",
+}
+
+
+def canonical_chord(chord) -> str:
+    """Reduce any layer's chord spelling to one comparable form ('CTRL + ALT + LEFT').
+
+    Hyprland writes `SUPER + MINUS`, ghostty writes `ctrl+alt+arrow_left` and
+    `alt+digit_3`, herdr writes `alt+shift+enter`. Comparison across layers has
+    to ignore all of that, so everything folds through here. Returns "" for
+    pseudo-triggers (`copy`, `paste`) and unparseable input.
+    """
+    if not chord:
+        return ""
+    text = str(chord).strip()
+    if "/" in text:  # ghostty key table: `foo/ctrl+a=...`
+        text = text.rsplit("/", 1)[-1]
+    changed = True
+    while changed:
+        changed = False
+        for prefix in _GHOSTTY_TRIGGER_PREFIXES:
+            if text.lower().startswith(prefix):
+                text = text[len(prefix):]
+                changed = True
+    parts = [p.strip() for p in text.split("+") if p.strip()]
+    if not parts:
+        return ""
+    # ghostty writes an explicit plus key as `ctrl++`; the empty token survives
+    # only as a doubled separator, so recognise the trailing plus as the key.
+    if text.endswith("++"):
+        parts = parts + ["+"]
+    mods, key = [], ""
+    for part in parts:
+        alias = _CHORD_MODS.get(part.upper())
+        if alias and part != "+":
+            if alias not in mods:
+                mods.append(alias)
+        else:
+            key = part
+    if not key:
+        return ""
+    upper = key.upper().replace(" ", "_")
+    if upper.startswith("DIGIT_") and upper[6:].isdigit():
+        upper = upper[6:]
+    upper = _CHORD_KEYS.get(upper, _CHORD_KEYS.get(key, upper))
+    if upper in ("COPY", "PASTE") and not mods:
+        return ""  # ghostty pseudo-triggers are not chords; no comparable form
+    mods.sort(key=lambda m: _CHORD_MOD_ORDER.get(m, 9))
+    out = " + ".join(mods + [upper])
+    return "" if (len(out) > MAX_KEY_LEN or UNSAFE_KEY_RE.search(out)) else out
+
+
+GHOSTTY_ACTION_ZH = {
+    "copy_to_clipboard": "复制选区到剪贴板",
+    "paste_from_clipboard": "从剪贴板粘贴",
+    "paste_from_selection": "粘贴 X 选区",
+    "increase_font_size": "放大字号",
+    "decrease_font_size": "缩小字号",
+    "reset_font_size": "恢复默认字号",
+    "reload_config": "重载 ghostty 配置",
+    "open_config": "打开 ghostty 配置文件",
+    "new_window": "新建 ghostty 窗口",
+    "new_tab": "新建 ghostty 标签页",
+    "close_tab": "关闭 ghostty 标签页",
+    "goto_tab": "跳到第 N 个 ghostty 标签页",
+    "next_tab": "下一个 ghostty 标签页",
+    "previous_tab": "上一个 ghostty 标签页",
+    "last_tab": "跳到最后一个 ghostty 标签页",
+    "new_split": "ghostty 自带分屏",
+    "goto_split": "切换 ghostty 自带分屏",
+    "resize_split": "调整 ghostty 自带分屏",
+    "toggle_split_zoom": "ghostty 分屏缩放",
+    "toggle_fullscreen": "切换全屏",
+    "close_window": "关闭整个窗口",
+    "quit": "退出 ghostty",
+    "adjust_selection": "扩展选区",
+    "scroll_page_up": "向上翻页",
+    "scroll_page_down": "向下翻页",
+    "scroll_to_top": "滚到最顶部",
+    "scroll_to_bottom": "滚到最底部",
+    "jump_to_prompt": "跳到上/下一个命令提示符",
+    "start_search": "终端内搜索",
+    "end_search": "结束搜索",
+    "select_all": "全选",
+    "inspector": "打开 Inspector 调试面板",
+    "toggle_command_palette": "ghostty 命令面板",
+    "write_screen_file": "导出屏幕内容到文件",
+    "clear_screen": "清屏",
+    "csi": "发送 CSI 序列（终端编码修正）",
+    "esc": "发送 ESC 序列",
+    "text": "发送文本序列",
+    "ignore": "吞掉这个键（什么都不做）",
+    "unbind": "解绑：把键让给内层程序",
+    "activate_key_table": "进入 ghostty 按键表",
+    "deactivate_key_table": "退出 ghostty 按键表",
+}
+
+GHOSTTY_PARAM_ZH = {
+    "write_screen_file": {"copy": "（进剪贴板）", "paste": "（粘贴出来）", "open": "（开文件）"},
+}
+
+HERDR_ACTION_ZH = {
+    "prefix": "herdr 前缀键（进入前缀模式）",
+    "help": "herdr 快捷键帮助",
+    "settings": "herdr 设置面板",
+    "reload_config": "重载 herdr 配置",
+    "detach": "脱离（detach）herdr 会话",
+    "open_notification_target": "跳到通知指向的 pane",
+    "copy_mode": "复制/回滚模式",
+    "edit_scrollback": "用编辑器打开回滚内容",
+    "clear_pane": "清空当前 pane",
+    "split_horizontal": "横向分屏",
+    "split_vertical": "纵向分屏",
+    "close_pane": "关闭 pane",
+    "zoom": "pane 全屏/还原（zoom）",
+    "rename_pane": "重命名 pane",
+    "last_pane": "回到上一个 pane",
+    "cycle_pane_next": "下一个 pane",
+    "cycle_pane_previous": "上一个 pane",
+    "focus_pane_left": "聚焦左侧 pane",
+    "focus_pane_down": "聚焦下方 pane",
+    "focus_pane_up": "聚焦上方 pane",
+    "focus_pane_right": "聚焦右侧 pane",
+    "swap_pane_left": "与左侧 pane 交换",
+    "swap_pane_down": "与下方 pane 交换",
+    "swap_pane_up": "与上方 pane 交换",
+    "swap_pane_right": "与右侧 pane 交换",
+    "resize_mode": "进入 resize 模式",
+    "resize_pane_left": "向左调整 pane 宽度",
+    "resize_pane_down": "向下调整 pane 高度",
+    "resize_pane_up": "向上调整 pane 高度",
+    "resize_pane_right": "向右调整 pane 宽度",
+    "new_tab": "新建标签页",
+    "rename_tab": "重命名标签页",
+    "close_tab": "关闭标签页",
+    "switch_tab": "跳到第 N 个标签页",
+    "previous_tab": "上一个标签页",
+    "next_tab": "下一个标签页",
+    "move_tab_previous": "把标签页往前挪",
+    "move_tab_next": "把标签页往后挪",
+    "new_workspace": "新建工作区",
+    "rename_workspace": "重命名工作区",
+    "close_workspace": "关闭工作区",
+    "switch_workspace": "跳到第 N 个工作区",
+    "previous_workspace": "上一个工作区",
+    "next_workspace": "下一个工作区",
+    "workspace_picker": "工作区选择器",
+    "goto": "goto：按名字跳转",
+    "new_worktree": "新建 git worktree",
+    "open_worktree": "打开 git worktree",
+    "remove_worktree": "删除 git worktree",
+    "previous_agent": "上一个 agent",
+    "next_agent": "下一个 agent",
+    "focus_agent": "聚焦第 N 个 agent",
+    "toggle_sidebar": "显示/隐藏侧栏",
+    "navigate_workspace_up": "导航模式：上移选择工作区",
+    "navigate_workspace_down": "导航模式：下移选择工作区",
+    "navigate_pane_left": "导航模式：选左侧 pane",
+    "navigate_pane_down": "导航模式：选下方 pane",
+    "navigate_pane_up": "导航模式：选上方 pane",
+    "navigate_pane_right": "导航模式：选右侧 pane",
+    "remote_image_paste": "远程会话里粘贴图片",
+}
+
+
+def _run_cli(argv, timeout=8):
+    """Run a helper command and return stdout, or "" for any failure."""
+    exe = shutil.which(argv[0])
+    if not exe:
+        return ""
+    try:
+        res = subprocess.run([exe] + list(argv[1:]), capture_output=True, text=True, timeout=timeout)
+    except Exception:
+        return ""
+    if res.returncode != 0:
+        return ""
+    return (res.stdout or "")[:MAX_FILE_BYTES]
+
+
+def _keybind_pairs(text):
+    """Yield (trigger, action) from `keybind = trigger=action` lines of ghostty config.
+
+    ghostty has no inline comments, so a value may carry a trailing comment only
+    by mistake; keep the first whitespace-free token as the action. `chain=` lines
+    continue the previous binding and are skipped.
+    """
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or not line.startswith("keybind"):
+            continue
+        body = line[len("keybind"):].lstrip()
+        if not body.startswith("="):
+            continue
+        rest = body[1:].strip()
+        if rest.split()[0:1] == ["clear"]:
+            continue
+        if rest.startswith("chain="):
+            continue
+        trigger, sep, action = rest.partition("=")
+        if not sep:
+            continue
+        # `keybind = ctrl+==increase_font_size:1` - the key itself is "=", so the
+        # first split ate one character too many.
+        if action.startswith("=") and trigger.endswith("+"):
+            trigger, action = trigger + "=", action[1:]
+        action = action.strip().split()[0] if action.strip() else ""
+        yield trigger.strip(), action
+
+
+def _ghostty_row(trigger, action, status, defaults, tuned):
+    """Build one read-only panel row for a ghostty binding."""
+    display = canonical_chord(trigger)
+    if not display:
+        return None
+    base = (action or "").split(":")[0].split(",")[0]
+    params = action[len(base) + 1:] if ":" in (action or "") else ""
+    zh = GHOSTTY_ACTION_ZH.get(base) or ("ghostty 动作：" + (base or action or "?"))
+    zh += GHOSTTY_PARAM_ZH.get(base, {}).get(params.split(",")[0], "")
+    row = {
+        "source": "ghostty",
+        "layer": "terminal",
+        "file": "ghostty/config",
+        "key": display,
+        "raw_key": trigger,
+        "description": "ghostty: " + (action or "unbind"),
+        "description_zh": zh,
+        "action": action or "unbind",
+        "category": CATEGORY_TERMINAL,
+        "status": status,
+        "default_key": display if status != "disabled" else "",
+        "is_mouse": False,
+        "is_release": None,
+        # managed_by is what makes KeybindsPanel.qml hide every mutating button.
+        "managed_by": GHOSTTY_MANAGER_LABEL,
+        "ghostty_trigger": trigger,
+    }
+    if tuned:
+        row["user_tuned"] = True
+        row["description_zh"] += "（写在 ~/.config/ghostty/config）"
+    if status == "disabled":
+        was = defaults.get(trigger, "")
+        row["default_action"] = was
+        row["default_key"] = display
+    return row
+
+
+def parse_ghostty_keybinds():
+    """Effective ghostty keybinds + the ones the user unbound on purpose.
+
+    Prefers `ghostty +list-keybinds` (the resolved set, ~90 ms) so the panel shows
+    what the terminal really does; falls back to reading the config file when the
+    CLI is unavailable. `+show-config --default` supplies the built-in map, which
+    is what lets an unbound row say what it used to be.
+    """
+    defaults = {}
+    for trigger, action in _keybind_pairs(_run_cli(["ghostty", "+show-config", "--default"])):
+        if trigger and action:
+            defaults.setdefault(trigger, action)
+
+    user_text = ""
+    try:
+        user_text = _safe_read_regular_file(GHOSTTY_CONFIG_PATH)
+    except Exception:
+        user_text = ""
+    user_pairs = list(_keybind_pairs(user_text))
+    user_triggers = {t for t, _ in user_pairs}
+    unbound = [t for t, a in user_pairs if a == "unbind"]
+
+    effective = {}
+    for trigger, action in _keybind_pairs(_run_cli(["ghostty", "+list-keybinds"])):
+        if not trigger:
+            continue
+        effective.setdefault(trigger, []).append(action)
+    if not effective:  # no CLI: show whatever the user file itself declares
+        for trigger, action in user_pairs:
+            if action and action != "unbind":
+                effective.setdefault(trigger, []).append(action)
+
+    rows = []
+    seen = set()
+    for trigger, actions in effective.items():
+        merged = ";".join([a for a in actions if a])
+        is_default = defaults.get(trigger) in actions and trigger not in user_triggers
+        row = _ghostty_row(trigger, merged, "default", defaults, tuned=trigger in user_triggers)
+        if row and row["key"] not in seen:
+            if not is_default:
+                row["status"] = "default"  # never "custom": that would offer delete on a foreign layer
+            rows.append(row)
+            seen.add(row["key"])
+    for trigger in unbound:
+        row = _ghostty_row(trigger, "unbind", "disabled", defaults, tuned=True)
+        if row and row["key"] not in seen:
+            was = defaults.get(trigger, "")
+            base = was.split(":")[0]
+            row["description"] = "ghostty: unbound (was %s)" % (was or "?" )
+            row["description_zh"] = "已解绑：原本是 %s" % (GHOSTTY_ACTION_ZH.get(base) or base or "ghostty 内置动作")
+            rows.append(row)
+            seen.add(row["key"])
+    return rows
+
+
+def _herdr_key_entries():
+    """Return [(action, chord)] from the [keys] table of herdr's config.toml."""
+    try:
+        text = _safe_read_regular_file(HERDR_CONFIG_PATH)
+    except Exception:
+        return []
+    try:
+        import tomllib
+
+        keys = tomllib.loads(text).get("keys", {})
+        out = []
+        for action, value in keys.items():
+            values = value if isinstance(value, list) else [value]
+            for chord in values:
+                if isinstance(chord, str) and chord:
+                    out.append((action, chord))
+        return out
+    except Exception:
+        pass
+    # Fallback for python < 3.11: enough for herdr's flat scalar/list values.
+    out, in_keys = [], False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            in_keys = stripped == "[keys]"
+            continue
+        if not in_keys or stripped.startswith("#") or "=" not in stripped:
+            continue
+        action, _, value = stripped.partition("=")
+        for chord in re.findall(r'"([^"]+)"', value) or ([value.strip()] if value.strip() else []):
+            if chord:
+                out.append((action.strip(), chord))
+    return out
+
+
+def parse_herdr_keybinds():
+    """herdr's own bindings, split into prefix-mode chords and direct chords.
+
+    A `prefix+...` chord only exists inside herdr's prefix mode, so it can never
+    collide with the outer layers; a direct chord (`alt+enter`, `ctrl+alt+left`)
+    competes with ghostty and Hyprland, which is exactly what the shadow pass
+    below checks for.
+    """
+    rows, seen = [], set()
+    for action, chord in _herdr_key_entries():
+        is_prefix = chord.startswith("prefix+")
+        rest = chord[len("prefix+"):] if is_prefix else chord
+        # A range like `alt+1..9` / `prefix+shift+1..9` expands on the *last* token.
+        head, sep, tail = rest.rpartition("+")
+        if ".." not in tail:
+            keys = [rest]
+        else:
+            lo, _, hi = tail.partition("..")
+            try:
+                keys = [(head + "+" if sep else "") + str(i) for i in range(int(lo), int(hi) + 1)]
+            except ValueError:
+                keys = [rest]
+        zh = HERDR_ACTION_ZH.get(action) or ("herdr 动作：" + action)
+        for index, one in enumerate(keys, start=1):
+            chord_key = canonical_chord(one)
+            if not chord_key:
+                continue
+            if is_prefix:
+                chord_key = "PREFIX + " + chord_key
+            if chord_key in seen:
+                continue
+            seen.add(chord_key)
+            rows.append({
+                "source": "herdr",
+                "layer": "herdr",
+                "file": "herdr/config.toml",
+                "key": chord_key,
+                "raw_key": chord,
+                "description": "herdr: " + action,
+                "description_zh": zh if len(keys) == 1 else "%s（第 %d 个）" % (zh, index),
+                "action": action,
+                "category": CATEGORY_HERDR,
+                "status": "default",
+                "default_key": chord_key,
+                "is_mouse": False,
+                "is_release": None,
+                "managed_by": HERDR_MANAGER_LABEL,
+                "herdr_action": action,
+                "herdr_prefix_chord": is_prefix,
+            })
+    return rows
+
+
+def terminal_layer_rows():
+    """All read-only rows for the layers inside the terminal window."""
+    rows = parse_ghostty_keybinds()
+    rows.extend(parse_herdr_keybinds())
+    return rows
+
+
+def _ghostty_forwards_key(row) -> bool:
+    """True when a ghostty binding hands the keystroke inward instead of owning it.
+
+    `csi:`/`esc:`/`text:` actions re-encode the key for the program inside the
+    terminal - e.g. `alt+shift+enter=csi:13;4u` exists precisely so herdr and tmux
+    can tell Alt+Shift+Enter apart - and `unconsumed:` explicitly does not consume
+    the input. Counting those as "ghostty owns this chord" would flag herdr's real
+    bindings as dead.
+    """
+    action = str(row.get("action") or "")
+    if action.split(":")[0] in ("csi", "esc", "text"):
+        return True
+    return "unconsumed:" in str(row.get("raw_key") or "").lower()
+
+
+def annotate_layer_shadows(all_active):
+    """Mark rows whose chord never reaches their layer because an outer layer owns it.
+
+    Precedence is Hyprland > ghostty > herdr, so:
+      * a ghostty bind on a chord Hyprland grabbed is dead code in ghostty;
+      * a herdr *direct* bind on a chord Hyprland or ghostty grabbed is dead code
+        in herdr - that is how herdr's alt+1..9 / ctrl+alt+arrow "second entry"
+        bindings silently did nothing until 2026-10-13.
+    Prefix-mode herdr chords are skipped: they are only ever offered to herdr.
+    """
+    hypr, ghostty = set(), set()
+    for b in all_active:
+        if b.get("status") == "disabled" or b.get("is_mouse") or b.get("is_release"):
+            continue
+        canon = canonical_chord(b.get("raw_key") or b.get("key"))
+        if not canon:
+            continue
+        if not b.get("layer"):
+            hypr.add(canon)
+        elif b.get("source") == "ghostty" and not _ghostty_forwards_key(b):
+            ghostty.add(canon)
+    for b in all_active:
+        layer = b.get("layer")
+        if not layer or b.get("status") == "disabled":
+            continue
+        if b.get("herdr_prefix_chord"):
+            continue
+        canon = canonical_chord(b.get("raw_key") or b.get("key"))
+        if not canon:
+            continue
+        if canon in hypr:
+            b["shadowed_by"] = "Hyprland"
+        elif layer == "herdr" and canon in ghostty:
+            b["shadowed_by"] = "ghostty"
+
+
 def build_complete_model():
     """
     Construct the unified model of active bindings, catalog, conflicts, and mouse scroll settings.
@@ -2088,19 +2585,27 @@ def build_complete_model():
         item["default_key"] = ""
         all_active.append(item)
 
+    # 3.5 Read-only rows for the layers inside the terminal window (ghostty owns
+    #     the key first, herdr sees what is left). They carry managed_by, so the
+    #     panel renders them without edit/reset/delete affordances.
+    all_active.extend(terminal_layer_rows())
+
     # 4. Categorize, then group by category with alphabetical order inside each
     #    group, so the "All" view reads as one section per category.
     for b in all_active:
         b["category"] = classify_binding(b)
-        b["description_zh"] = localize_description(b.get("description", ""))
+        if not b.get("description_zh"):
+            b["description_zh"] = localize_description(b.get("description", ""))
 
     all_active.sort(key=category_sort_key)
 
-    # 5. Detect Real Key Conflicts
+    # 5. Detect Real Key Conflicts. Terminal-layer rows are excluded: a ghostty
+    #    or herdr row sharing a chord with a Hyprland binding is a cross-layer
+    #    shadow (step 6.5), not two Hyprland bindings fighting over one key.
     conflicts_dict = {}
     key_groups = {}
     for b in all_active:
-        if b.get("status") == "disabled" or b.get("is_mouse") or b.get("is_release"):
+        if b.get("status") == "disabled" or b.get("is_mouse") or b.get("is_release") or b.get("layer"):
             continue
         k = b["key"]
         if k not in key_groups:
@@ -2137,6 +2642,9 @@ def build_complete_model():
 
     conflicts = list(conflicts_dict.values())
 
+    # 6.5 Cross-layer shadows: which layer actually gets the key.
+    annotate_layer_shadows(all_active)
+
     # 6. Available Catalog (sorted alphabetically by name)
     bound_descriptions = {b["description"].lower() for b in all_active if b.get("status") != "disabled"}
     catalog = []
@@ -2167,7 +2675,8 @@ def build_complete_model():
 
     catalog.sort(key=lambda x: x.get("name", "").lower())
 
-    total_modified = len([b for b in all_active if b.get("status") in ("modified", "custom")])
+    total_modified = len([b for b in all_active if b.get("status") in ("modified", "custom") and not b.get("layer")])
+    layer_rows = [b for b in all_active if b.get("layer")]
 
     # Chip counts: every row the "All" list actually shows, including the
     # disabled (unbound) ones, so a chip's number matches what clicking it gives.
@@ -2183,9 +2692,17 @@ def build_complete_model():
         "catalog": catalog,
         "conflicts": conflicts,
         "apps": get_installed_apps(),
-        "total_active": len([b for b in all_active if b.get("status") != "disabled"]),
+        "total_active": len([b for b in all_active if b.get("status") != "disabled" and not b.get("layer")]),
         "total_modified": total_modified,
         "total_conflicts": len(conflicts),
+        # Terminal-layer counters stay separate so the header still describes the
+        # Hyprland bindings this panel can actually edit.
+        "total_terminal": len([b for b in layer_rows if b.get("source") == "ghostty" and b.get("status") != "disabled"]),
+        "total_terminal_unbound": len([b for b in layer_rows if b.get("source") == "ghostty" and b.get("status") == "disabled"]),
+        "total_herdr": len([b for b in layer_rows if b.get("source") == "herdr"]),
+        "total_shadows": len([b for b in layer_rows if b.get("shadowed_by")]),
+        "ghostty_config_file": GHOSTTY_CONFIG_PATH if os.path.isfile(GHOSTTY_CONFIG_PATH) else "",
+        "herdr_config_file": HERDR_CONFIG_PATH if os.path.isfile(HERDR_CONFIG_PATH) else "",
         "mouse_settings": get_mouse_scroll_settings(),
         "user_bindings_file": USER_BINDINGS_PATH,
         "island_bindings_file": ISLAND_BINDINGS_PATH if os.path.isfile(ISLAND_BINDINGS_PATH) else "",
@@ -2707,6 +3224,22 @@ def main():
 
     elif cmd == "apps":
         print(json.dumps(get_installed_apps()))
+
+    elif cmd == "terminal":
+        # Debug view of the read-only layers inside the terminal window. Reuse the
+        # full model so the cross-layer shadow annotations come from one code path.
+        model = build_complete_model()
+        rows = [b for b in model["active"] if b.get("layer")]
+        print(json.dumps({
+            "ghostty_config_file": model["ghostty_config_file"],
+            "herdr_config_file": model["herdr_config_file"],
+            "total_terminal": model["total_terminal"],
+            "total_terminal_unbound": model["total_terminal_unbound"],
+            "total_herdr": model["total_herdr"],
+            "rows": rows,
+            "shadows": [{"key": r["key"], "by": r["shadowed_by"], "action": r["action"]}
+                        for r in rows if r.get("shadowed_by")],
+        }, indent=2))
 
     else:
         print(json.dumps({"success": False, "error": f"Unknown command {cmd}"}))

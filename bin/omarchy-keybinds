@@ -5,12 +5,21 @@ PLUGIN_ID="meviusisback.keybinds"
 REPO_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 
 if [[ "$1" == "--help" || "$1" == "-h" ]]; then
-  echo "Usage: omarchy-keybinds [list|set|reset|disable|--print]"
-  echo "  (no args)  Open the graphical keybindings manager window"
-  echo "  list       Output full JSON model of active binds, catalog, and conflicts"
-  echo "  set        Set a keybinding: omarchy-keybinds set <key> <description> <command>"
-  echo "  reset      Reset a keybinding to default: omarchy-keybinds reset <key>"
-  echo "  disable    Disable/unbind a keybinding: omarchy-keybinds disable <key>"
+  echo "Usage: omarchy-keybinds [command]"
+  echo "  (no args)   Open the graphical keybindings manager window"
+  echo "  list        Full JSON model of active binds, catalog, conflicts, and terminal layers"
+  echo "  set         Set a keybinding: omarchy-keybinds set <key> <description> <command>"
+  echo "  reset       Reset a keybinding to default: omarchy-keybinds reset <key>"
+  echo "  disable     Disable/unbind a keybinding: omarchy-keybinds disable <key>"
+  echo "  enable      Re-enable a disabled keybinding: omarchy-keybinds enable <key>"
+  echo "  reload      Reload Hyprland configuration"
+  echo "  terminal    Read-only view of the layers inside the terminal window (ghostty + herdr),"
+  echo "              including chords that never reach their layer (shadows)"
+  echo "  island      Island overlay bindings (SUPER + K view) and settable action ids"
+  echo "  island-set  Bind an island action: omarchy-keybinds island-set <action-id> [keys]"
+  echo "  apps        List installed apps usable as binding targets"
+  echo "  menu-check|menu-install|menu-remove   Launcher entry for this manager"
+  echo "  --print     Print Omarchy's own menu keybindings (omarchy-menu-keybindings)"
   exit 0
 fi
 
