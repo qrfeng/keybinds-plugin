@@ -2399,7 +2399,12 @@ def parse_herdr_keybinds():
                 "layer": "herdr",
                 "file": "herdr/config.toml",
                 "key": chord_key,
-                "raw_key": chord,
+                # `raw_key` is the one chord this row actually means; a range in
+                # the config (`alt+1..9`) is one line for herdr but nine chords
+                # on the keyboard, and matching chords across layers only works
+                # on the expanded form. `herdr_chord` keeps the config spelling.
+                "raw_key": one,
+                "herdr_chord": chord,
                 "description": "herdr: " + action,
                 "description_zh": zh if len(keys) == 1 else "%s（第 %d 个）" % (zh, index),
                 "action": action,
@@ -2437,6 +2442,17 @@ def _ghostty_forwards_key(row) -> bool:
     return "unconsumed:" in str(row.get("raw_key") or "").lower()
 
 
+def _row_canon(b):
+    """The comparable chord of one binding row, however its layer spells chords.
+
+    Every parser stores its already-folded chord in `key` (herdr's expanded
+    range members included), while `raw_key` keeps the source spelling: herdr's
+    `alt+1..9`, ghostty's `alt+digit_3` or `foo/ctrl+a`. Folding `key` first is
+    what lets a range member match the outer layer's single binding.
+    """
+    return canonical_chord(b.get("key")) or canonical_chord(b.get("raw_key"))
+
+
 def annotate_layer_shadows(all_active):
     """Mark rows whose chord never reaches their layer because an outer layer owns it.
 
@@ -2451,7 +2467,7 @@ def annotate_layer_shadows(all_active):
     for b in all_active:
         if b.get("status") == "disabled" or b.get("is_mouse") or b.get("is_release"):
             continue
-        canon = canonical_chord(b.get("raw_key") or b.get("key"))
+        canon = _row_canon(b)
         if not canon:
             continue
         if not b.get("layer"):
@@ -2464,7 +2480,7 @@ def annotate_layer_shadows(all_active):
             continue
         if b.get("herdr_prefix_chord"):
             continue
-        canon = canonical_chord(b.get("raw_key") or b.get("key"))
+        canon = _row_canon(b)
         if not canon:
             continue
         if canon in hypr:

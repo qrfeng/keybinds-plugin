@@ -535,6 +535,45 @@ class TestTerminalLayer(unittest.TestCase):
         self.assertNotIn("shadowed_by", herdr_prefix)
         self.assertNotIn("shadowed_by", hypr)
 
+    def test_range_expanded_chords_are_matched_against_outer_layers(self):
+        """`switch_tab = ["alt+1..9"]` is nine chords, not one config line.
+
+        Comparing chords on the config spelling ("alt+1..9") matched nothing, so
+        every range binding stayed invisible to this pass - which is exactly how
+        ghostty's goto_tab ate herdr's alt+1..9 unnoticed until 2026-10-13.
+        """
+        paths = []
+        for suffix in (".toml", ".conf"):
+            with tempfile.NamedTemporaryFile("w+", delete=False, suffix=suffix) as tmp:
+                paths.append(tmp.name)
+        herdr_cfg, ghostty_cfg = paths
+        try:
+            with open(herdr_cfg, "w") as f:
+                f.write('[keys]\nswitch_tab = ["alt+1..3"]\n')
+            old = (keybinds_manager.HERDR_CONFIG_PATH, keybinds_manager.GHOSTTY_CONFIG_PATH,
+                   keybinds_manager._run_cli)
+            keybinds_manager.HERDR_CONFIG_PATH = herdr_cfg
+            keybinds_manager.GHOSTTY_CONFIG_PATH = ghostty_cfg
+            keybinds_manager._run_cli = lambda argv, timeout=8: "keybind = alt+2=goto_tab:2\n"
+            try:
+                rows = keybinds_manager.parse_ghostty_keybinds()
+                rows += keybinds_manager.parse_herdr_keybinds()
+            finally:
+                (keybinds_manager.HERDR_CONFIG_PATH, keybinds_manager.GHOSTTY_CONFIG_PATH,
+                 keybinds_manager._run_cli) = old
+        finally:
+            for path in paths:
+                os.unlink(path)
+        keybinds_manager.annotate_layer_shadows(rows)
+        by_key = {r["key"]: r for r in rows}
+        self.assertEqual([r["source"] for r in rows if r["key"] == "ALT + 2"], ["ghostty", "herdr"])
+        self.assertEqual(by_key["ALT + 2"]["shadowed_by"], "ghostty")
+        self.assertNotIn("shadowed_by", by_key["ALT + 1"])
+        self.assertNotIn("shadowed_by", by_key["ALT + 3"])
+        # raw_key carries the chord this row means, herdr_chord the config line.
+        self.assertEqual(by_key["ALT + 2"]["raw_key"], "alt+2")
+        self.assertEqual(by_key["ALT + 2"]["herdr_chord"], "alt+1..3")
+
     def test_real_model_exposes_both_layers_without_touching_hyprland_totals(self):
         model = keybinds_manager.build_complete_model()
         for field in ("total_terminal", "total_terminal_unbound", "total_herdr", "total_shadows",
