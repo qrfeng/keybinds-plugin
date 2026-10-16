@@ -136,8 +136,12 @@ Item {
 
     if (presetItem) {
       root.actionTitle = presetItem.name || presetItem.description || ""
-      root.actionCommand = presetItem.command || ""
-      root.actionDispatcher = presetItem.dispatcher || ""
+      // Show what will actually be stored: for window/workspace presets that is
+      // the Lua dispatcher (the pre-Lua `hyprctl dispatch ...` command string is
+      // display-only metadata and would be a dead binding if saved).
+      var presetDispatcher = presetItem.dispatcher || ""
+      root.actionCommand = presetDispatcher.indexOf("hl.") === 0 ? presetDispatcher : (presetItem.command || "")
+      root.actionDispatcher = presetDispatcher
       root.actionCategory = presetItem.category || "General"
       root.actionKey = presetItem.default_key || ""
       root.selectedActionId = presetItem.id || presetItem.name
@@ -321,6 +325,15 @@ Item {
   }
 
   function appendDispatcher(snippet) {
+    // Dispatcher chips insert Lua dispatchers. Under a Lua config Hyprland
+    // evaluates a dispatch argument as Lua, so the old `hyprctl dispatch foo`
+    // strings come out dead; a Lua expression also replaces the field instead
+    // of appending, because "hl.dsp.focus(...) extra" is not a dispatcher.
+    if (snippet.indexOf("hl.") === 0) {
+      root.actionCommand = snippet
+      root.actionDispatcher = snippet
+      return
+    }
     if (!root.actionCommand || root.actionCommand.trim().length === 0) {
       root.actionCommand = snippet
     } else {
@@ -1326,7 +1339,7 @@ Item {
               id: cmdInput
               Layout.fillWidth: true
               text: root.actionCommand
-              placeholderText: "e.g. ghostty -e btop, hyprctl dispatch killactive"
+              placeholderText: "e.g. ghostty -e btop, or hl.dsp.window.close() for window controls"
               onTextChanged: {
                 root.actionCommand = text
                 if (root.actionType === "custom") {
@@ -1343,12 +1356,12 @@ Item {
               Repeater {
                 model: [
                   { label: "+ exec", val: "ghostty -e " },
-                  { label: "+ killactive", val: "hyprctl dispatch killactive" },
-                  { label: "+ togglefloating", val: "hyprctl dispatch togglefloating" },
-                  { label: "+ fullscreen", val: "hyprctl dispatch fullscreen 0" },
-                  { label: "+ movefocus l", val: "hyprctl dispatch movefocus l" },
-                  { label: "+ swapwindow l", val: "hyprctl dispatch swapwindow l" },
-                  { label: "+ workspace", val: "hyprctl dispatch workspace " }
+                  { label: "+ killactive", val: "hl.dsp.window.close()" },
+                  { label: "+ togglefloating", val: 'hl.dsp.window.float({ action = "toggle" })' },
+                  { label: "+ fullscreen", val: "hl.dsp.window.fullscreen()" },
+                  { label: "+ movefocus l", val: 'hl.dsp.focus({ direction = "l" })' },
+                  { label: "+ swapwindow l", val: 'hl.dsp.window.swap({ direction = "l" })' },
+                  { label: "+ workspace", val: 'hl.dsp.focus({ workspace = "" })' }
                 ]
 
                 BorderSurface {
@@ -1402,7 +1415,7 @@ Item {
               }
               Text {
                 textFormat: Text.PlainText
-                text: "Tip: Use 'ghostty -e <cmd>' for CLI tools, or 'hyprctl dispatch <dispatcher> <args>' for window controls."
+                text: "Tip: Use 'ghostty -e <cmd>' for CLI tools, or a Lua dispatcher such as hl.dsp.window.close() / hl.dsp.focus({ workspace = \"2\" }) for window controls."
                 color: Util.alpha(root.foreground, 0.6)
                 font.family: Style.font.family
                 font.pixelSize: Style.font.caption - 2

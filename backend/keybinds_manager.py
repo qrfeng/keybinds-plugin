@@ -606,6 +606,11 @@ def category_sort_key(binding: dict):
     return (idx, binding.get("description", "").lower(), binding.get("key", ""))
 
 
+# Each preset carries both spellings of its action: "dispatcher" is the Lua
+# dispatcher that actually runs under a Lua config, "command" is the pre-Lua
+# `hyprctl dispatch ...` string, kept for display and for non-Lua setups. Only
+# "dispatcher" reaches bindings.lua; a preset that somehow arrives without one
+# is translated by legacy_dispatch_to_lua() rather than written out dead.
 PRESET_CATALOG = [
     # Window Management
     {
@@ -3028,11 +3033,89 @@ def build_complete_model():
     }
 
 
+_LEGACY_DISPATCH_RE = re.compile(r"^\s*hyprctl\s+dispatch\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+(.*?))?\s*$")
+_LEGACY_SHORT_DIRECTIONS = {"l": "left", "r": "right", "u": "up", "d": "down"}
+
+
+def _lua_arg_safe(value: str) -> bool:
+    """Reject anything that could break out of the Lua string literal we embed it in."""
+    return bool(value) and not re.search(r'["\\\n{}]', value)
+
+
+def legacy_dispatch_to_lua(command: str) -> str:
+    """Translate a legacy ``hyprctl dispatch <name> [args]`` command into the
+    ``hl.dsp.*`` dispatcher it corresponds to, or return "" when there is no
+    known equivalent.
+
+    Why: with a Lua config Hyprland evaluates the dispatch argument as Lua, so
+    ``hyprctl dispatch killactive`` (and every other pre-Lua dispatcher name)
+    resolves to a nil global and the key silently does nothing. Presets and the
+    quick-add snippets still carry those strings, and people paste them from
+    older dotfiles, so they are translated on the way to bindings.lua instead of
+    being written out dead. Dispatcher names and argument shapes follow the
+    official stubs in /usr/share/hypr/stubs/hl.meta.lua.
+    """
+    match = _LEGACY_DISPATCH_RE.match(command or "")
+    if not match:
+        return ""
+
+    name = match.group(1)
+    arg = (match.group(2) or "").strip()
+
+    if name == "killactive":
+        return "hl.dsp.window.close()"
+    if name == "pin":
+        return "hl.dsp.window.pin()"
+    if name == "togglefloating":
+        return 'hl.dsp.window.float({ action = "toggle" })'
+    if name == "fullscreen":
+        if arg in ("", "0", "1"):
+            return "hl.dsp.window.fullscreen()"
+        if arg == "2":
+            return 'hl.dsp.window.fullscreen({ mode = "maximized" })'
+        return ""
+    if name == "layoutmsg" and _lua_arg_safe(arg):
+        return f'hl.dsp.layout("{arg}")'
+    if name == "movefocus" and arg in ("l", "r", "u", "d"):
+        return f'hl.dsp.focus({{ direction = "{arg}" }})'
+    if name == "swapwindow" and arg in ("l", "r", "u", "d"):
+        return f'hl.dsp.window.swap({{ direction = "{arg}" }})'
+    if name == "focusmonitor" and arg in ("l", "r", "u", "d", "+1", "-1"):
+        return f'hl.dsp.focus({{ monitor = "{arg}" }})'
+    if name == "movewindow" and arg in _LEGACY_SHORT_DIRECTIONS:
+        return f'hl.dsp.window.move({{ direction = "{_LEGACY_SHORT_DIRECTIONS[arg]}" }})'
+    if name == "workspace" and _lua_arg_safe(arg):
+        return f'hl.dsp.focus({{ workspace = "{arg}" }})'
+    if name == "movetoworkspace" and _lua_arg_safe(arg):
+        return f'hl.dsp.window.move({{ workspace = "{arg}" }})'
+    if name == "movetoworkspacesilent" and _lua_arg_safe(arg):
+        return f'hl.dsp.window.move({{ workspace = "{arg}", follow = false }})'
+    if name == "togglespecialworkspace":
+        return f'hl.dsp.workspace.toggle_special("{arg or "special:1"}")'
+    if name == "movecurrentworkspacetomonitor" and _lua_arg_safe(arg):
+        return f'hl.dsp.workspace.move({{ monitor = "{arg}" }})'
+    return ""
+
+
+def normalize_bind_entry(entry: dict) -> dict:
+    """Upgrade a legacy ``hyprctl dispatch`` command to its Lua dispatcher so a
+    written o.bind never stores a dispatcher Hyprland can no longer run.
+    Idempotent: entries that already carry a Lua action are left untouched."""
+    action = (entry.get("action") or "").strip()
+    if action.startswith("hl.") or action.startswith("{"):
+        return entry
+    lua = legacy_dispatch_to_lua(entry.get("command") or "")
+    if lua:
+        entry["action"] = lua
+    return entry
+
+
 def _written_bind_identity(entry):
     """Return the (description, action) pair a single o.bind line for ``entry``
     will store on disk. Scoping key removal to this exact pair lets a rebind
     drop only its own previous line, never a *different* binding that shares
     the old key (e.g. the pair it is being swapped with)."""
+    entry = normalize_bind_entry(dict(entry))
     desc = sanitize_lua_str(entry.get("description", ""))
     cmd = entry.get("command", "")
     action = entry.get("action", "")
@@ -3153,6 +3236,7 @@ def write_user_bindings(lines_to_add=None, unbinds_to_add=None, keys_to_remove=N
 
     if lines_to_add:
         for entry in lines_to_add:
+            entry = normalize_bind_entry(dict(entry))
             key = normalize_key_chord(entry.get("key", ""))
             desc = sanitize_lua_str(entry.get("description", ""))
             cmd = entry.get("command", "")
@@ -3239,12 +3323,12 @@ def set_keybinding(key: str, description: str, command: str, action: str = "", o
     if any(d["key"] == norm_key for d in default_binds) or override_conflicts:
         unbinds_to_add.append(norm_key)
 
-    binds = [{
+    binds = [normalize_bind_entry({
         "key": norm_key,
         "description": description or command,
         "command": command,
         "action": action,
-    }]
+    })]
 
     write_user_bindings(lines_to_add=binds, unbinds_to_add=unbinds_to_add, keys_to_remove=keys_to_clean,
                         preserve_entry=binds[0])

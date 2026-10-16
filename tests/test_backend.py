@@ -604,5 +604,58 @@ class TestTerminalLayer(unittest.TestCase):
         self.assertEqual([b for b in layer_rows if b.get("is_conflict")], [])
 
 
+class TestLegacyDispatchTranslation(unittest.TestCase):
+    """`hyprctl dispatch <legacy name>` is dead under a Lua config, so the
+    panel must never store one in bindings.lua."""
+
+    def test_known_dispatchers_become_lua(self):
+        cases = {
+            "hyprctl dispatch killactive": "hl.dsp.window.close()",
+            "hyprctl dispatch fullscreen": "hl.dsp.window.fullscreen()",
+            "hyprctl dispatch fullscreen 2": 'hl.dsp.window.fullscreen({ mode = "maximized" })',
+            "hyprctl dispatch togglefloating": 'hl.dsp.window.float({ action = "toggle" })',
+            "hyprctl dispatch layoutmsg togglesplit": 'hl.dsp.layout("togglesplit")',
+            "hyprctl dispatch movefocus l": 'hl.dsp.focus({ direction = "l" })',
+            "hyprctl dispatch swapwindow d": 'hl.dsp.window.swap({ direction = "d" })',
+            "hyprctl dispatch focusmonitor +1": 'hl.dsp.focus({ monitor = "+1" })',
+            "hyprctl dispatch movewindow u": 'hl.dsp.window.move({ direction = "up" })',
+            "hyprctl dispatch workspace e+1": 'hl.dsp.focus({ workspace = "e+1" })',
+            "hyprctl dispatch movetoworkspace special:scratchpad": 'hl.dsp.window.move({ workspace = "special:scratchpad" })',
+            "hyprctl dispatch movetoworkspacesilent 3": 'hl.dsp.window.move({ workspace = "3", follow = false })',
+            "hyprctl dispatch togglespecialworkspace scratchpad": 'hl.dsp.workspace.toggle_special("scratchpad")',
+            "hyprctl dispatch movecurrentworkspacetomonitor l": 'hl.dsp.workspace.move({ monitor = "l" })',
+        }
+        for legacy, lua in cases.items():
+            self.assertEqual(keybinds_manager.legacy_dispatch_to_lua(legacy), lua, legacy)
+
+    def test_unknown_or_unsafe_input_is_left_alone(self):
+        for cmd in (
+            "",
+            "ghostty -e btop",
+            "hyprctl dispatch",
+            "hyprctl dispatch unknowndsp foo",
+            'hyprctl dispatch workspace "evil"}',
+            "hyprctl dispatch workspace a\nb",
+        ):
+            self.assertEqual(keybinds_manager.legacy_dispatch_to_lua(cmd), "", cmd)
+
+    def test_normalize_prefers_existing_lua_action(self):
+        entry = keybinds_manager.normalize_bind_entry({
+            "command": "hyprctl dispatch killactive",
+            "action": 'hl.dsp.window.kill()',
+        })
+        self.assertEqual(entry["action"], "hl.dsp.window.kill()")
+
+    def test_written_identity_uses_lua_form(self):
+        entry = {"description": "kill", "command": "hyprctl dispatch killactive", "action": ""}
+        desc, action = keybinds_manager._written_bind_identity(entry)
+        self.assertEqual(action, "hl.dsp.window.close()")
+
+    def test_written_identity_leaves_plain_commands_quoted(self):
+        entry = {"description": "btop", "command": "ghostty -e btop", "action": "exec"}
+        _desc, action = keybinds_manager._written_bind_identity(entry)
+        self.assertEqual(action, '"ghostty -e btop"')
+
+
 if __name__ == "__main__":
     unittest.main()
