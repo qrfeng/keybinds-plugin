@@ -146,8 +146,13 @@ The plugin manages personal overrides in `~/.config/hypr/bindings.lua`:
 Automated unit tests cover key normalization, Lua parser safety, comment handling, unbind detection, and conflict evaluation:
 
 ```bash
-python3 -m unittest discover -s tests -p "test_*.py"
+tests/run                    # or: tests/run -v, tests/run TestKeybindsBackend
 ```
+
+`tests/run` is `python3 -B -m unittest discover -s tests -p "test_*.py"`: the
+`-B` matters. The shell watches this plugin folder and reloads every plugin when
+anything in it changes, so a stray `tests/__pycache__/*.pyc` from a plain
+unittest run blinks the desktop bar mid-use.
 
 ---
 

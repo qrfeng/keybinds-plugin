@@ -176,6 +176,36 @@ CATEGORY_CUSTOM = "\U0001f9e9 Custom"
 # Their names stay parenthesised so a chip never reads like a Hyprland bucket.
 CATEGORY_TERMINAL = "\u2328\ufe0f Terminal (ghostty)"
 CATEGORY_HERDR = "\U0001f916 Terminal (herdr)"
+# The AI coding agent itself is a fullscreen TUI inside herdr, and its transcript
+# scrolling keys are its own config file, not Hyprland's.
+CATEGORY_PI = "\U0001f4ac Terminal (pi)"
+
+# Short labels for the same buckets. The island's keybinding view uses these for
+# its group tabs (`groups` below); the panel renders them on its filter chips.
+#
+# The nine Omarchy buckets say what a shortcut *does*, in Chinese. The four that
+# belong to one program say *who owns the key*, using that program's own name:
+# "终端" / "分屏" / "AI" were three angles on the same window (he calls the whole
+# herdr window "the terminal", and ghostty is only the shell around it), so any
+# functional name for one of them read wrong for the other two. A program name
+# cannot be mistranslated, and it answers the question the tab is actually for.
+CATEGORY_ZH = {
+    CATEGORY_WORKSPACE: "\u5de5\u4f5c\u533a",
+    CATEGORY_WINDOW: "\u7a97\u53e3",
+    CATEGORY_APP: "\u5e94\u7528",
+    CATEGORY_SYSTEM: "\u7cfb\u7edf",
+    CATEGORY_DISPLAY: "\u663e\u793a",
+    CATEGORY_CAPTURE: "\u622a\u56fe",
+    CATEGORY_CLIPBOARD: "\u526a\u8d34\u677f",
+    CATEGORY_MEDIA: "\u5a92\u4f53",
+    CATEGORY_NOTIFICATION: "\u901a\u77e5",
+    CATEGORY_VOICE: "\u8bed\u97f3",
+    CATEGORY_ISLAND: "island",
+    CATEGORY_TERMINAL: "ghostty",
+    CATEGORY_HERDR: "herdr",
+    CATEGORY_PI: "pi",
+    CATEGORY_CUSTOM: "\u81ea\u5b9a\u4e49",
+}
 
 CATEGORY_ORDER = [
     CATEGORY_WORKSPACE,
@@ -191,6 +221,7 @@ CATEGORY_ORDER = [
     CATEGORY_ISLAND,
     CATEGORY_TERMINAL,
     CATEGORY_HERDR,
+    CATEGORY_PI,
     CATEGORY_CUSTOM,
 ]
 
@@ -215,7 +246,9 @@ _CATEGORY_DESC_RULES = [
     (CATEGORY_NOTIFICATION, ("notification", "silencing")),
     (CATEGORY_CLIPBOARD, ("clipboard", "universal copy", "universal paste", "universal cut", "emoji")),
     (CATEGORY_VOICE, ("dictation", "voxtype", "voice")),
-    (CATEGORY_SYSTEM, ("touchpad", "lock", "reminder", "lid", "battery", "nightlight")),
+    # "keybinding" keeps the manager's own chord out of a 1-row 自定义 bucket: it
+    # is a system entry like Lock, not a personal experiment.
+    (CATEGORY_SYSTEM, ("touchpad", "lock", "reminder", "lid", "battery", "nightlight", "keybinding")),
     (CATEGORY_WORKSPACE, ("workspace", "scratchpad")),
     (CATEGORY_DISPLAY, ("brightness", "monitor", "laptop display", "scaling", "zoom", "clamshell", "resolution", "backlight")),
     (CATEGORY_MEDIA, ("volume", "track", "mute", "play", "pause", "media", "audio", "eject")),
@@ -253,8 +286,9 @@ def classify_binding(item: dict) -> str:
     than which Omarchy file it came from.
     """
     # Terminal-layer rows are bucketed by layer, never by what they do: a
-    # ghostty "close_tab" and a herdr "close_tab" must not land in App.
-    if item.get("source") in ("ghostty", "herdr"):
+    # ghostty "close_tab" and a herdr "close_tab" must not land in App, and pi's
+    # transcript scrolling has nothing to do with System.
+    if item.get("source") in ("ghostty", "herdr", "pi"):
         return item.get("category") or CATEGORY_TERMINAL
     if item.get("source") == "island":
         return CATEGORY_ISLAND
@@ -355,10 +389,10 @@ DESCRIPTION_ZH = {
     "toggle single-window square aspect": "单窗口切成正方形",
     "save window width": "记住窗口宽度",
     "restore window width": "恢复窗口宽度",
-    "expand window left": "窗口变宽（左边界外扩 100px）",
-    "shrink window left": "窗口变窄（左边界内收 100px）",
-    "expand window down": "窗口变高（下边界外扩 100px）",
-    "shrink window up": "窗口变矮（上边界内收 100px）",
+    "expand window left": "窗口变宽（+100px）",
+    "shrink window left": "窗口变窄（-100px）",
+    "expand window down": "窗口变高（+100px）",
+    "shrink window up": "窗口变矮（-100px）",
     "expand window left a little": "窗口变宽一点（25px）",
     "shrink window left a little": "窗口变窄一点（25px）",
     "expand window down a little": "窗口变高一点（25px）",
@@ -396,18 +430,19 @@ DESCRIPTION_ZH = {
     "file manager (active cwd)": "文件管理器（当前目录）",
     "obsidian": "Obsidian 笔记",
     "omawrite": "Omawrite 写作",
-    "docker": "Docker TUI",
+    "docker": "Docker 监控界面",
     "music": "音乐（Spotify）",
-    "music tui": "音乐 TUI（cliamp）",
-    "music tui (cliamp)": "音乐 TUI（cliamp）",
+    "music tui": "音乐播放器",
+    "music tui (cliamp)": "音乐播放器",
     "passwords": "密码库（1Password）",
     "signal": "Signal",
     "calculator": "计算器",
     "system monitor (btop)": "系统监控（btop）",
-    "agent": "AI Agent",
+    "agent": "AI 代理入口",
     "agent usage": "Agent 用量看板",
     "apps menu": "应用启动器",
     "app launcher": "应用启动器",
+    "task list": "任务清单",
     "chatgpt": "网页版 ChatGPT",
     "grok": "网页版 Grok",
     "x": "网页版 X",
@@ -451,7 +486,7 @@ DESCRIPTION_ZH = {
     "enable touchpad": "启用触控板",
     "toggle touchpad": "开/关触控板",
     "keybindings": "快捷键一览",
-    "keybindings manager": "快捷键管理器（GUI）",
+    "keybindings manager": "快捷键管理器",
     "keybindings helper": "快捷键一览",
     "tmux keybindings": "tmux 快捷键一览",
     "herdr keybindings": "herdr 快捷键一览",
@@ -534,9 +569,9 @@ DESCRIPTION_ZH = {
 # each instead of dozens of near-duplicate dictionary entries.
 _DESCRIPTION_ZH_PATTERNS = [
     (re.compile(r"^switch to workspace (\d+)$"), "切到工作区 {}"),
-    (re.compile(r"^move window to workspace (\d+) \(silent\)$"), "静默把窗口送到工作区 {}（不跟随）"),
-    (re.compile(r"^move window to workspace (\d+)$"), "把窗口送到工作区 {}（跟随）"),
-    (re.compile(r"^move window silently to workspace (\d+)$"), "静默把窗口送到工作区 {}（不跟随）"),
+    (re.compile(r"^move window to workspace (\d+) \(silent\)$"), "移到工作区 {}（不跟随）"),
+    (re.compile(r"^move window to workspace (\d+)$"), "移到工作区 {}（跟随）"),
+    (re.compile(r"^move window silently to workspace (\d+)$"), "移到工作区 {}（不跟随）"),
     (re.compile(r"^switch to group window (\d+)$"), "切到分组内第 {} 个窗口"),
     (re.compile(r"^bar panel (\d+)$"), "打开状态栏第 {} 个面板"),
 ]
@@ -1253,6 +1288,11 @@ CODE_KEY_NAMES.update({
     "35": "bracketright", "36": "RETURN", "48": "semicolon", "49": "grave",
     "51": "backslash", "65": "SPACE", "9": "ESCAPE", "66": "CAPS_LOCK",
 })
+# F13-F24 are XKB 191-202 (evdev 183-194). Laptop special keys land here: Omarchy
+# binds its root menu to `SUPER + SHIFT + code:201` (bindings/utilities.lua), which
+# is F23 -- a chord nobody presses on purpose while it is printed as a number.
+for _i in range(12):
+    CODE_KEY_NAMES[str(191 + _i)] = "F%d" % (13 + _i)
 
 
 def decode_code_key(main_key: str) -> str:
@@ -2010,6 +2050,8 @@ GHOSTTY_CONFIG_PATH = os.path.expanduser("~/.config/ghostty/config")
 HERDR_CONFIG_PATH = os.path.expanduser("~/.config/herdr/config.toml")
 GHOSTTY_MANAGER_LABEL = "ghostty config"
 HERDR_MANAGER_LABEL = "herdr config"
+PI_MANAGER_LABEL = "pi keybindings"
+PI_KEYBINDINGS_PATH = os.path.expanduser("~/.pi/agent/keybindings.json")
 _GHOSTTY_TRIGGER_PREFIXES = ("global:", "all:", "performable:", "unconsumed:", "physical:")
 
 _CHORD_MODS = {
@@ -2085,22 +2127,22 @@ GHOSTTY_ACTION_ZH = {
     "increase_font_size": "放大字号",
     "decrease_font_size": "缩小字号",
     "reset_font_size": "恢复默认字号",
-    "reload_config": "重载 ghostty 配置",
-    "open_config": "打开 ghostty 配置文件",
-    "new_window": "新建 ghostty 窗口",
-    "new_tab": "新建 ghostty 标签页",
-    "close_tab": "关闭 ghostty 标签页",
-    "goto_tab": "跳到第 N 个 ghostty 标签页",
-    "next_tab": "下一个 ghostty 标签页",
-    "previous_tab": "上一个 ghostty 标签页",
-    "last_tab": "跳到最后一个 ghostty 标签页",
+    "reload_config": "重载配置",
+    "open_config": "打开配置文件",
+    "new_window": "新建窗口",
+    "new_tab": "新建标签页",
+    "close_tab": "关闭标签页",
+    "goto_tab": "跳到第 N 个标签页",
+    "next_tab": "下一个标签页",
+    "previous_tab": "上一个标签页",
+    "last_tab": "跳到最后一个标签页",
     "new_split": "ghostty 自带分屏",
     "goto_split": "切换 ghostty 自带分屏",
     "resize_split": "调整 ghostty 自带分屏",
     "toggle_split_zoom": "ghostty 分屏缩放",
     "toggle_fullscreen": "切换全屏",
     "close_window": "关闭整个窗口",
-    "quit": "退出 ghostty",
+    "quit": "退出终端",
     "adjust_selection": "扩展选区",
     "scroll_page_up": "向上翻页",
     "scroll_page_down": "向下翻页",
@@ -2111,10 +2153,10 @@ GHOSTTY_ACTION_ZH = {
     "end_search": "结束搜索",
     "select_all": "全选",
     "inspector": "打开 Inspector 调试面板",
-    "toggle_command_palette": "ghostty 命令面板",
+    "toggle_command_palette": "命令面板",
     "write_screen_file": "导出屏幕内容到文件",
     "clear_screen": "清屏",
-    "csi": "发送 CSI 序列（终端编码修正）",
+    "csi": "发送 CSI 序列",
     "esc": "发送 ESC 序列",
     "text": "发送文本序列",
     "ignore": "吞掉这个键（什么都不做）",
@@ -2125,39 +2167,44 @@ GHOSTTY_ACTION_ZH = {
 
 GHOSTTY_PARAM_ZH = {
     "write_screen_file": {"copy": "（进剪贴板）", "paste": "（粘贴出来）", "open": "（开文件）"},
+    # Chords this machine keeps as a raw CSI sequence on purpose. Without
+    # `shift+enter=csi:13;2u` a TUI (pi, herdr, ...) cannot tell Shift+Enter from
+    # Enter, so the input box cannot insert a newline - worth naming in the panel
+    # instead of showing the opaque "发送 CSI 序列".
+    "csi": {"13;2u": "在 TUI 输入框里换行（不提交）"},
 }
 
 HERDR_ACTION_ZH = {
-    "prefix": "herdr 前缀键（进入前缀模式）",
-    "help": "herdr 快捷键帮助",
-    "settings": "herdr 设置面板",
-    "reload_config": "重载 herdr 配置",
-    "detach": "脱离（detach）herdr 会话",
-    "open_notification_target": "跳到通知指向的 pane",
+    "prefix": "前缀键（进入前缀模式）",
+    "help": "快捷键帮助",
+    "settings": "设置面板",
+    "reload_config": "重载配置",
+    "detach": "脱离会话（后台继续运行）",
+    "open_notification_target": "跳到通知指向的分屏格",
     "copy_mode": "复制/回滚模式",
     "edit_scrollback": "用编辑器打开回滚内容",
-    "clear_pane": "清空当前 pane",
-    "split_horizontal": "横向分屏",
-    "split_vertical": "纵向分屏",
-    "close_pane": "关闭 pane",
-    "zoom": "pane 全屏/还原（zoom）",
-    "rename_pane": "重命名 pane",
-    "last_pane": "回到上一个 pane",
-    "cycle_pane_next": "下一个 pane",
-    "cycle_pane_previous": "上一个 pane",
-    "focus_pane_left": "聚焦左侧 pane",
-    "focus_pane_down": "聚焦下方 pane",
-    "focus_pane_up": "聚焦上方 pane",
-    "focus_pane_right": "聚焦右侧 pane",
-    "swap_pane_left": "与左侧 pane 交换",
-    "swap_pane_down": "与下方 pane 交换",
-    "swap_pane_up": "与上方 pane 交换",
-    "swap_pane_right": "与右侧 pane 交换",
-    "resize_mode": "进入 resize 模式",
-    "resize_pane_left": "向左调整 pane 宽度",
-    "resize_pane_down": "向下调整 pane 高度",
-    "resize_pane_up": "向上调整 pane 高度",
-    "resize_pane_right": "向右调整 pane 宽度",
+    "clear_pane": "清空当前分屏格",
+    "split_horizontal": "分屏：上下两栏",
+    "split_vertical": "分屏：左右两栏",
+    "close_pane": "关闭分屏格",
+    "zoom": "分屏格最大化/还原",
+    "rename_pane": "重命名分屏格",
+    "last_pane": "回到上一个分屏格",
+    "cycle_pane_next": "下一个分屏格",
+    "cycle_pane_previous": "上一个分屏格",
+    "focus_pane_left": "聚焦左侧分屏格",
+    "focus_pane_down": "聚焦下方分屏格",
+    "focus_pane_up": "聚焦上方分屏格",
+    "focus_pane_right": "聚焦右侧分屏格",
+    "swap_pane_left": "与左侧分屏格交换",
+    "swap_pane_down": "与下方分屏格交换",
+    "swap_pane_up": "与上方分屏格交换",
+    "swap_pane_right": "与右侧分屏格交换",
+    "resize_mode": "进入调整大小模式",
+    "resize_pane_left": "向左调整分屏格宽度",
+    "resize_pane_down": "向下调整分屏格高度",
+    "resize_pane_up": "向上调整分屏格高度",
+    "resize_pane_right": "向右调整分屏格宽度",
     "new_tab": "新建标签页",
     "rename_tab": "重命名标签页",
     "close_tab": "关闭标签页",
@@ -2173,20 +2220,20 @@ HERDR_ACTION_ZH = {
     "previous_workspace": "上一个工作区",
     "next_workspace": "下一个工作区",
     "workspace_picker": "工作区选择器",
-    "goto": "goto：按名字跳转",
+    "goto": "会话导航（可搜索）",
     "new_worktree": "新建 git worktree",
     "open_worktree": "打开 git worktree",
     "remove_worktree": "删除 git worktree",
-    "previous_agent": "上一个 agent",
-    "next_agent": "下一个 agent",
-    "focus_agent": "聚焦第 N 个 agent",
+    "previous_agent": "上一个 AI 对话",
+    "next_agent": "下一个 AI 对话",
+    "focus_agent": "直达第 N 个 AI 对话",
     "toggle_sidebar": "显示/隐藏侧栏",
     "navigate_workspace_up": "导航模式：上移选择工作区",
     "navigate_workspace_down": "导航模式：下移选择工作区",
-    "navigate_pane_left": "导航模式：选左侧 pane",
-    "navigate_pane_down": "导航模式：选下方 pane",
-    "navigate_pane_up": "导航模式：选上方 pane",
-    "navigate_pane_right": "导航模式：选右侧 pane",
+    "navigate_pane_left": "导航模式：选左侧分屏格",
+    "navigate_pane_down": "导航模式：选下方分屏格",
+    "navigate_pane_up": "导航模式：选上方分屏格",
+    "navigate_pane_right": "导航模式：选右侧分屏格",
     "remote_image_paste": "远程会话里粘贴图片",
 }
 
@@ -2243,7 +2290,14 @@ def _ghostty_row(trigger, action, status, defaults, tuned):
     base = (action or "").split(":")[0].split(",")[0]
     params = action[len(base) + 1:] if ":" in (action or "") else ""
     zh = GHOSTTY_ACTION_ZH.get(base) or ("ghostty 动作：" + (base or action or "?"))
-    zh += GHOSTTY_PARAM_ZH.get(base, {}).get(params.split(",")[0], "")
+    # A parenthesised note is appended to the action; a bare phrase replaces it
+    # (used by `csi`, where the action name is meaningless and the parameter is
+    # the whole story). No note at all = keep the plain action label.
+    note = GHOSTTY_PARAM_ZH.get(base, {}).get(params.split(",")[0], "")
+    if note.startswith("\uff08"):
+        zh += note
+    elif note:
+        zh = note
     row = {
         "source": "ghostty",
         "layer": "terminal",
@@ -2264,7 +2318,8 @@ def _ghostty_row(trigger, action, status, defaults, tuned):
     }
     if tuned:
         row["user_tuned"] = True
-        row["description_zh"] += "（写在 ~/.config/ghostty/config）"
+        # `user_tuned` stays as data for the panel; the label itself must not
+        # carry a source breadcrumb - every ghostty row lives in that one file.
     if status == "disabled":
         was = defaults.get(trigger, "")
         row["default_action"] = was
@@ -2320,8 +2375,16 @@ def parse_ghostty_keybinds():
         if row and row["key"] not in seen:
             was = defaults.get(trigger, "")
             base = was.split(":")[0]
-            row["description"] = "ghostty: unbound (was %s)" % (was or "?" )
-            row["description_zh"] = "已解绑：原本是 %s" % (GHOSTTY_ACTION_ZH.get(base) or base or "ghostty 内置动作")
+            if was:
+                row["description"] = "ghostty: unbound (was %s)" % was
+                row["description_zh"] = "已解绑：原本是 %s" % (GHOSTTY_ACTION_ZH.get(base) or base)
+            else:
+                # Not a built-in default. `alt+shift+enter` for instance never was
+                # one - it only existed here as our own csi: re-encode - so
+                # "原本是 ghostty 内置动作" would state something false.
+                row["description"] = "ghostty: not bound by default, key forwarded inward"
+                row["description_zh"] = "已解绑：ghostty 本来不绑这个键，直接透传给内层"
+            # annotate_layer_shadows() appends which inner layer now answers it.
             rows.append(row)
             seen.add(row["key"])
     return rows
@@ -2359,6 +2422,38 @@ def _herdr_key_entries():
         for chord in re.findall(r'"([^"]+)"', value) or ([value.strip()] if value.strip() else []):
             if chord:
                 out.append((action.strip(), chord))
+    return out
+
+
+def _indexed_label(zh, index):
+    """Label for one member of a `1..9` range binding."""
+    # "跳到第 N 个标签页" already carries the placeholder, so fill it in instead of
+    # stacking "跳到第 N 个标签页（第 3 个）" on top of itself.
+    if "第 N 个" in zh:
+        return zh.replace("第 N 个", "第 %d 个" % index)
+    return "%s（第 %d 个）" % (zh, index)
+
+
+def _herdr_disabled_actions():
+    """Return actions herdr *does* ship a default key for, switched off with `x = ""`.
+
+    An empty chord is herdr's disable spelling (verified with `herdr config check`:
+    `""` validates clean, while `"none"`/`"unbind"` parse as invalid bindings). Such
+    an action has no chord to show, so without a row of its own the panel would
+    silently hide a deliberate decision and the key would look "dead for no
+    reason" once the built-in default it used to have is gone.
+    """
+    try:
+        import tomllib
+
+        keys = tomllib.loads(_safe_read_regular_file(HERDR_CONFIG_PATH)).get("keys", {})
+    except Exception:
+        return []
+    out = []
+    for action, value in keys.items():
+        values = value if isinstance(value, list) else [value]
+        if values and all(isinstance(v, str) and not v.strip() for v in values):
+            out.append(action)
     return out
 
 
@@ -2406,7 +2501,7 @@ def parse_herdr_keybinds():
                 "raw_key": one,
                 "herdr_chord": chord,
                 "description": "herdr: " + action,
-                "description_zh": zh if len(keys) == 1 else "%s（第 %d 个）" % (zh, index),
+                "description_zh": zh if len(keys) == 1 else _indexed_label(zh, index),
                 "action": action,
                 "category": CATEGORY_HERDR,
                 "status": "default",
@@ -2417,6 +2512,163 @@ def parse_herdr_keybinds():
                 "herdr_action": action,
                 "herdr_prefix_chord": is_prefix,
             })
+    for action in _herdr_disabled_actions():
+        zh = HERDR_ACTION_ZH.get(action) or action
+        rows.append({
+            "source": "herdr",
+            "layer": "herdr",
+            "file": "herdr/config.toml",
+            "key": "无按键",
+            "raw_key": "",
+            "herdr_chord": "",
+            "description": "herdr: %s (disabled: bound to an empty key)" % action,
+            "description_zh": "已关闭：%s —— config.toml 里绑了空键，要用的话自己给它指定一个键" % zh,
+            "action": action,
+            "category": CATEGORY_HERDR,
+            "status": "disabled",
+            "default_key": "",
+            "is_mouse": False,
+            "is_release": None,
+            "managed_by": HERDR_MANAGER_LABEL,
+            "herdr_action": action,
+            "herdr_prefix_chord": False,
+        })
+    return rows
+
+
+def _pi_docs_path():
+    """Locate pi's keybindings.md from the `pi` executable (mise keeps docs beside it)."""
+    exe = shutil.which("pi")
+    if not exe:
+        return ""
+    root = os.path.dirname(os.path.realpath(exe))
+    for cand in (os.path.join(root, "docs", "keybindings.md"),
+                 os.path.join(os.path.dirname(root), "docs", "keybindings.md")):
+        if os.path.isfile(cand):
+            return cand
+    return ""
+
+
+PI_DOCS_PATH = _pi_docs_path()
+# pi's default chord table lives in its docs as markdown tables. Only the
+# transcript-scrolling section is mirrored: that is what gets pressed while reading
+# a long AI answer, and mirroring all ~300 editor actions would bury the panel.
+# The chords are parsed from the doc rather than hard-coded, so an upgrade that
+# moves a default shows up here instead of silently lying.
+PI_DOCS_SECTION = "#### Fullscreen"
+
+PI_ACTION_ZH = {
+    "tui.altScreen.pageUp": "对话上翻一页",
+    "tui.altScreen.pageDown": "对话下翻一页",
+    "tui.altScreen.halfPageUp": "对话上翻半页",
+    "tui.altScreen.halfPageDown": "对话下翻半页",
+    "tui.altScreen.lineUp": "对话上滑一行",
+    "tui.altScreen.lineDown": "对话下滑一行",
+    "tui.altScreen.previousPrompt": "跳到上一条消息",
+    "tui.altScreen.nextPrompt": "跳到下一条消息",
+    "tui.altScreen.search": "在对话里搜索",
+    "tui.altScreen.searchNext": "搜索：下一个匹配",
+    "tui.altScreen.searchPrevious": "搜索：上一个匹配",
+    "tui.altScreen.searchClose": "关闭对话搜索",
+    "tui.altScreen.top": "跳到对话开头",
+    "tui.altScreen.bottom": "跳到对话末尾（继续跟随）",
+}
+
+
+def _pi_default_actions():
+    """[(action_id, [default chords], english description)] from pi's docs table."""
+    if not PI_DOCS_PATH:
+        return []
+    try:
+        text = _safe_read_regular_file(PI_DOCS_PATH)
+    except Exception:
+        return []
+    out, in_section = [], False
+    for line in text.splitlines():
+        if line.startswith("#"):
+            if in_section:
+                break
+            in_section = line.strip() == PI_DOCS_SECTION
+            continue
+        if not in_section or not line.startswith("|"):
+            continue
+        cols = [col.strip() for col in line.strip().strip("|").split("|")]
+        if len(cols) < 3 or not cols[0].startswith("`"):
+            continue
+        # Drop the chords the doc mentions only inside a parenthetical: those are
+        # platform exceptions ("`ctrl+up`, `ctrl+up` (`ctrl+up` only on Windows and
+        # WSL)"), and listing them would claim a Windows-only default is live here.
+        cell = cols[1]
+        notes = "".join(re.findall(r"\(([^)]*)\)", cell) + re.findall(r"\uff08([^\uff09]*)\uff09", cell))
+        skipped = set(re.findall(r"`([^`]+)`", notes))
+        chords = [c for c in re.findall(r"`([^`]+)`", cell) if " " not in c and c not in skipped]
+        out.append((cols[0].strip("`"), chords, cols[2]))
+    return out
+
+
+def _pi_overrides():
+    """The user's own pi keybindings: value replaces the default, [] disables it."""
+    try:
+        data = json.loads(_safe_read_regular_file(PI_KEYBINDINGS_PATH))
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    data.pop("$schema", None)
+    return data
+
+
+def _pi_row(action, chords, zh, source_file, status):
+    row = {
+        "source": "pi",
+        "layer": "pi",
+        "file": source_file,
+        "key": "无按键",
+        "raw_key": "",
+        "description": "pi: " + action,
+        "description_zh": ("已关闭：%s —— pi 里这个动作被绑了空列表" % zh) if status == "disabled"
+        else zh,
+        "action": action,
+        "category": CATEGORY_PI,
+        "status": status,
+        "default_key": "",
+        "is_mouse": False,
+        "is_release": None,
+        "managed_by": PI_MANAGER_LABEL,
+        "pi_action": action,
+    }
+    if not chords:
+        return [row]
+    return [dict(row, key=canonical_chord(str(chord)), raw_key=str(chord),
+                 default_key=canonical_chord(str(chord))) for chord in chords]
+
+
+def parse_pi_keybinds():
+    """pi's own TUI keys: documented defaults with ~/.pi/agent/keybindings.json on top.
+
+    pi is the innermost layer - it paints a fullscreen TUI inside a herdr pane -
+    so an outer layer that owns a chord wins and the pi row becomes decoration.
+    That is why the transcript scroll keys had to avoid the ones herdr already
+    took, and why these rows go through the same shadow pass as herdr's.
+    """
+    overrides = _pi_overrides()
+    actions = list(_pi_default_actions())
+    known = {action for action, _, _ in actions}
+    actions.extend((action, [], "") for action in sorted(overrides) if action not in known)
+    rows, seen = [], set()
+    for action, defaults, desc in actions:
+        chords = overrides.get(action, defaults)
+        if isinstance(chords, str):
+            chords = [chords]
+        zh = PI_ACTION_ZH.get(action) or desc or action
+        for row in _pi_row(action, list(chords or []), zh,
+                          "pi/keybindings.json" if action in overrides else "pi 内置默认",
+                          "default" if chords else "disabled"):
+            marker = (row["key"], action)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            rows.append(row)
     return rows
 
 
@@ -2424,6 +2676,7 @@ def terminal_layer_rows():
     """All read-only rows for the layers inside the terminal window."""
     rows = parse_ghostty_keybinds()
     rows.extend(parse_herdr_keybinds())
+    rows.extend(parse_pi_keybinds())
     return rows
 
 
@@ -2487,6 +2740,35 @@ def annotate_layer_shadows(all_active):
             b["shadowed_by"] = "Hyprland"
         elif layer == "herdr" and canon in ghostty:
             b["shadowed_by"] = "ghostty"
+
+    # The mirror image of the above: a chord ghostty forwarded (`=unbind`) is not
+    # wasted, it is handed to whoever lives inside the terminal. Naming the new
+    # owner turns ~50 bare "已解绑" rows into a map of who actually answers the
+    # key - which is the question this panel exists to answer.
+    claims = {}
+    for b in all_active:
+        if b.get("status") == "disabled" or b.get("shadowed_by"):
+            continue
+        if b.get("is_mouse") or b.get("is_release"):
+            continue
+        canon = _row_canon(b)
+        if not canon:
+            continue
+        if not b.get("layer"):
+            claims.setdefault(canon, ("Hyprland", b.get("description_zh") or b.get("description") or ""))
+        elif b.get("source") == "herdr" and not b.get("herdr_prefix_chord"):
+            claims.setdefault(canon, ("herdr", b.get("description_zh") or b.get("action") or ""))
+    for b in all_active:
+        if b.get("source") != "ghostty" or b.get("status") != "disabled":
+            continue
+        claim = claims.get(_row_canon(b))
+        if not claim:
+            continue
+        owner, what = claim
+        b["handed_to"] = owner
+        b["description_zh"] = str(b.get("description_zh", "")) + (
+            " ⇒ 现在由 %s 接手：%s" % (owner, what) if what else " ⇒ 现在由 %s 接手" % owner)
+        b["description"] = str(b.get("description", "")) + " -> forwarded to " + owner
 
 
 def build_complete_model():
@@ -2699,12 +2981,31 @@ def build_complete_model():
     category_counts = {}
     for b in all_active:
         cat = b.get("category") or CATEGORY_CUSTOM
+        b["category"] = cat
+        b["category_zh"] = CATEGORY_ZH.get(cat, cat)
         category_counts[cat] = category_counts.get(cat, 0) + 1
+
+    # Group tabs for the island's keybinding view. Counts here exclude the
+    # unbound (struck-out) rows on purpose: that view lists keys you can
+    # actually press, so a tab's number must be the number of rows under it.
+    # The panel keeps `category_counts` (which includes unbound) untouched.
+    live_counts: dict = {}
+    for b in all_active:
+        if b.get("status") == "disabled":
+            continue
+        live_counts[b["category"]] = live_counts.get(b["category"], 0) + 1
+    groups = [
+        {"id": cat, "label": CATEGORY_ZH.get(cat, cat), "count": live_counts[cat]}
+        for cat in CATEGORY_ORDER
+        if live_counts.get(cat)
+    ]
 
     return {
         "active": all_active,
         "category_order": CATEGORY_ORDER,
         "category_counts": category_counts,
+        "category_zh": CATEGORY_ZH,
+        "groups": groups,
         "catalog": catalog,
         "conflicts": conflicts,
         "apps": get_installed_apps(),

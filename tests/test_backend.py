@@ -5,6 +5,11 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "backend")))
+# Importing the backend writes backend/__pycache__/*.pyc, and the running shell
+# watches this whole plugin folder: a new .pyc reads as "the plugin changed"
+# and reloads the desktop bar. Tests are not a plugin change, so keep the
+# compiler from leaving anything behind.
+sys.dont_write_bytecode = True
 import keybinds_manager
 
 
@@ -318,8 +323,12 @@ class TestKeybindsBackend(unittest.TestCase):
         self.assertEqual(keybinds_manager.normalize_key_chord("SUPER + code:19"), "SUPER + 0")
         self.assertEqual(keybinds_manager.normalize_key_chord("SUPER + code:20"), "SUPER + minus")
         self.assertEqual(keybinds_manager.normalize_key_chord("SUPER + SHIFT + code:21"), "SUPER + SHIFT + equal")
+        # F13-F24 = XKB 191-202. Omarchy binds its root menu to code:201, so this is
+        # the difference between a chord you can press and a number you cannot.
+        self.assertEqual(keybinds_manager.normalize_key_chord("SUPER + SHIFT + code:201"), "SUPER + SHIFT + F23")
+        self.assertEqual(keybinds_manager.normalize_key_chord("SUPER + code:191"), "SUPER + F13")
         # unknown codes stay as written rather than inventing a key
-        self.assertEqual(keybinds_manager.normalize_key_chord("SUPER + code:201"), "SUPER + code:201")
+        self.assertEqual(keybinds_manager.normalize_key_chord("SUPER + code:250"), "SUPER + code:250")
 
     def test_expand_loop_binds(self):
         """Workspace bindings a Lua for-loop writes must still be reported."""
@@ -362,7 +371,7 @@ class TestKeybindsBackend(unittest.TestCase):
     def test_localize_description(self):
         zh = keybinds_manager.localize_description
         self.assertEqual(zh("Switch to workspace 7"), "\u5207\u5230\u5de5\u4f5c\u533a 7")
-        self.assertEqual(zh("Move Window to Workspace 3 (Silent)"), "\u9759\u9ed8\u628a\u7a97\u53e3\u9001\u5230\u5de5\u4f5c\u533a 3\uff08\u4e0d\u8ddf\u968f\uff09")
+        self.assertEqual(zh("Move Window to Workspace 3 (Silent)"), "\u79fb\u5230\u5de5\u4f5c\u533a 3\uff08\u4e0d\u8ddf\u968f\uff09")
         self.assertEqual(zh("Bar panel 4"), "\u6253\u5f00\u72b6\u6001\u680f\u7b2c 4 \u4e2a\u9762\u677f")
         # catalog preset names are Title Case versions of the same phrases
         self.assertEqual(zh("Close Window"), zh("Close window"))

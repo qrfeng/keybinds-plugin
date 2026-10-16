@@ -1,0 +1,15 @@
+#!/bin/bash
+# Run the backend's unit tests without touching the plugin folder.
+#
+# The desktop shell watches this whole plugin directory and reloads every
+# plugin when anything in it changes. Plain `python3 -m unittest discover`
+# leaves tests/__pycache__/ behind, which reads to the shell as "the plugin
+# changed" and reloads the bar mid-use. -B keeps the compiler from writing any
+# .pyc anywhere under here.
+#
+#   tests/run                     # all tests
+#   tests/run -v                  # verbose
+#   tests/run TestKeybindsBackend # one case
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+exec python3 -B -m unittest discover -s tests -p "test_*.py" "$@"

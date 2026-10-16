@@ -46,21 +46,33 @@ Item {
   // classifier in backend/keybinds_manager.py (CATEGORY_ORDER) and carry a
   // count of the rows clicking them would show. Categories with no bindings at
   // all are skipped, except the one currently selected.
+  // Category ids carry an emoji + English name ("🗂 Workspace") because they are
+  // the classifier's keys. On screen the backend's short Chinese label wins.
+  readonly property var catZhMap: (root.modelData && root.modelData.category_zh) || ({})
+
+  function catZh(cat, fallback) {
+    var key = String(cat || "")
+    var zh = String(catZhMap[key] || "")
+    if (zh) return zh
+    return String(cat || fallback || "")
+  }
+
   readonly property var categories: {
     var active = (root.modelData && root.modelData.active) || []
     var counts = (root.modelData && root.modelData.category_counts) || {}
     var order = (root.modelData && root.modelData.category_order) || []
-    var out = [{ name: "All", count: active.length }]
+    var out = [{ name: "All", label: "\u5168\u90e8", count: active.length }]
     var seen = {}
     for (var i = 0; i < order.length; i++) {
       var cat = order[i]
       seen[cat] = true
       if (counts[cat] || root.currentCategory === cat) {
-        out.push({ name: cat, count: counts[cat] || 0 })
+        out.push({ name: cat, label: root.catZh(cat, cat), count: counts[cat] || 0 })
       }
     }
     for (var extra in counts) {
-      if (!seen[extra] && counts[extra]) out.push({ name: extra, count: counts[extra] })
+      if (!seen[extra] && counts[extra])
+        out.push({ name: extra, label: root.catZh(extra, extra), count: counts[extra] })
     }
     return out
   }
@@ -810,7 +822,7 @@ Item {
                   textFormat: Text.PlainText
                   id: chipLabel
                   anchors.centerIn: parent
-                  text: chip.modelData.count > 0 ? chip.modelData.name + " \u00b7 " + chip.modelData.count : chip.modelData.name
+                  text: chip.modelData.count > 0 ? (chip.modelData.label || chip.modelData.name) + " \u00b7 " + chip.modelData.count : (chip.modelData.label || chip.modelData.name)
                   color: chip.isSelected ? root.accent : root.foreground
                   font.family: Style.font.family
                   font.pixelSize: Style.font.caption
@@ -908,7 +920,7 @@ Item {
                       && (activeRow.index === 0
                           || ((root.filteredActive[activeRow.index - 1] || {}).category
                               !== (activeRow.modelData || {}).category))
-                    text: (activeRow.modelData && activeRow.modelData.category) || ""
+                    text: root.catZh(activeRow.modelData && activeRow.modelData.category, "")
                     textFormat: Text.PlainText
                     color: Util.alpha(root.accent, 0.9)
                     font.family: Style.font.family
@@ -1038,7 +1050,7 @@ Item {
                             Text {
                               id: catLabel
                               anchors.centerIn: parent
-                              text: (activeRow.modelData && activeRow.modelData.category) || "General"
+                              text: root.catZh(activeRow.modelData && activeRow.modelData.category, "General")
                               textFormat: Text.PlainText
                               color: Util.alpha(root.foreground, 0.5)
                               font.family: Style.font.family
@@ -1277,7 +1289,7 @@ Item {
                           Text {
                             id: modCatLabel
                             anchors.centerIn: parent
-                            text: (modRow.modelData && modRow.modelData.category) || "Custom"
+                            text: root.catZh(modRow.modelData && modRow.modelData.category, "Custom")
                             textFormat: Text.PlainText
                             color: Util.alpha(root.foreground, 0.5)
                             font.family: Style.font.family
@@ -1401,7 +1413,7 @@ Item {
                       Text {
                         id: catPill
                         anchors.centerIn: parent
-                        text: catalogRow.modelData.category
+                        text: root.catZh(catalogRow.modelData.category, "Custom")
                         textFormat: Text.PlainText
                         color: root.accent
                         font.family: Style.font.family
